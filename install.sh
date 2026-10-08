@@ -139,18 +139,23 @@ fi
 mkdir -p "$BASE/prefix-wine/$STEAM_REL/steamapps/workshop/content/$MCC_APP"
 
 bold "Local network addresses (needs your Mac password once)"
-note "Reclaimer talks to the game over 127.0.0.x / 127.0.1.x / 127.3.1.x; macOS only enables 127.0.0.1."
+note "Reclaimer talks to the game over 127.0.0-3.x / 127.3.1.x; macOS only enables 127.0.0.1."
 note "This installs a small startup task (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist)."
-if [ ! -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
-  T=$(mktemp -d)
-  script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
-  script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
-  sudo /bin/sh -c "mkdir -p '/Library/Application Support/ProjectReclaimer' &&
-    install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '/Library/Application Support/ProjectReclaimer/reclaimer-loopback.sh' &&
+T=$(mktemp -d)
+script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
+script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
+LB_DIR="/Library/Application Support/ProjectReclaimer"
+# (re)install when missing or when a Reclaimer release needed new address ranges
+if ! cmp -s "$T/reclaimer-loopback.sh" "$LB_DIR/reclaimer-loopback.sh" ||
+   [ ! -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
+  sudo /bin/sh -c "mkdir -p '$LB_DIR' &&
+    install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '$LB_DIR/reclaimer-loopback.sh' &&
     install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
-    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" </dev/tty || die "Could not install the network startup task."
-  rm -rf "$T"
+    { launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null; true; } &&
+    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" </dev/tty ||
+    die "Could not install the network startup task."
 fi
+rm -rf "$T"
 note "ok"
 
 # --- optional Metal variant ---------------------------------------------------------------------------------------

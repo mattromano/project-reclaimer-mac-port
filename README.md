@@ -36,7 +36,7 @@ What it does, in order:
 3. Shows a **QR code**: open the Steam app on your phone and scan it. Only Halo 3 is downloaded from your own
    Steam account (~35 GB), so this part takes a while. Nothing is shared from anyone else's copy.
 4. Asks for your **Mac password** once to install a small startup task that enables the local network addresses
-   Reclaimer uses (`127.0.0.x`, `127.0.1.x`, `127.3.1.x`; macOS only enables `127.0.0.1` by default).
+   Reclaimer uses (`127.0.0.x`–`127.0.3.x`, `127.3.1.x`; macOS only enables `127.0.0.1` by default).
 5. Asks whether to also install the **Metal** version.
 6. Puts **Project Reclaimer** (and **Project Reclaimer Metal**) in `~/Applications`, so they show up in Spotlight
    and Launchpad.
@@ -57,6 +57,7 @@ If anything fails, run the same command again; finished steps are skipped and th
 | Problem | Fix |
 |---|---|
 | Game won't start after a reboot | The network startup task re-adds the addresses at boot; give it a few seconds after login, or re-run the installer. |
+| "Could not join that server" after a Reclaimer update | A new release may use new local addresses: re-run the installer to update the startup task. |
 | "Steam login expired" notification | Terminal opens with a QR code; scan it with the Steam app. |
 | Low frame rate in big maps | In Settings, lower the render resolution, or try the other app (Wine vs. Metal). |
 | Something else | Logs are in `~/Games/ProjectReclaimer/logs/` (`client-wine.log`, `client-metal.log`, `workshop-helper.log`). |
@@ -76,7 +77,7 @@ These are the problems found while getting it running, and what the scripts do a
 | Wine's built-in DirectX 11 can't create a device on MoltenVK, so the engine crashes on start | DXVK-macOS `d3d11`/`d3d10core` (Wine version) or D3DMetal (Metal version) |
 | Reclaimer's menu (egui/glutin) needs OpenGL 3.0+, but Wine on macOS only gives 2.1 to apps that don't request a core profile | Mesa's `opengl32.dll` (llvmpipe) next to the game, with `LP_NUM_THREADS=0` (its worker threads each used a full core) |
 | Crash mid-match in `xaudio2_9.dll`, and poor audio | MCC's `xaudio2_9redist.dll` hands off to Wine's FAudio on "Windows 10"; `xaudio2_9=d` keeps Microsoft's own mixer |
-| Joining fails / engine crashes binding `127.x.y.z` | A LaunchDaemon aliases `127.0.0.x`, `127.0.1.x`, `127.3.1.x` on `lo0` at boot |
+| Joining fails ("host refused the join") / engine crashes binding `127.x.y.z` | A LaunchDaemon aliases `127.0.0.x`–`127.0.3.x` and `127.3.1.x` on `lo0` at boot (0.9.8 added `127.0.2.x`); re-running the installer updates it |
 | DXVK rebuilt its swapchain every frame (a 1080p swapchain in a differently sized full-screen window), idling the GPU each time | Wine version runs windowed at exactly its render size: ~95 → ~120 fps uncapped |
 | Apple's GPTK Wine 7.7 lacks the AFD socket polling Reclaimer's networking (tokio) needs, so the server browser dies | Metal version uses CrossOver 24 (Wine 9) through CrossOver's D3DMetal hook instead |
 | No Steam client under Wine (its UI renders black) | DepotDownloader for game files and Workshop mods, using Steam's QR sign-in |

@@ -146,7 +146,7 @@ def download(wid, label):
         notify("Steam login expired. Opening Terminal to sign in with a QR code.")
         relogin(name)
     else:
-        notify(f"Could not download {label}. See ~/Games/reclaimer/workshop-helper.log")
+        notify(f"Could not download {label}. See ~/Games/ProjectReclaimer/logs/workshop-helper.log")
     sys.stderr.write(p.stdout[-4000:] + p.stderr[-4000:])
     return False
 

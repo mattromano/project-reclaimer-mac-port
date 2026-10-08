@@ -1,16 +1,16 @@
 #!/bin/bash
-# Project Reclaimer for Mac: installs Halo 3 (MCC) + Project Reclaimer under Wine on Apple Silicon.
+# Project Reclaimer Mac Port: installs Halo 3 (MCC) + Project Reclaimer under Wine on Apple Silicon.
 #
-#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/mattromano/reclaimer-mac/main/install.sh)"
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main/install.sh)"
 #
 # Everything lives in ~/Games/ProjectReclaimer (override with RECLAIMER_HOME). Safe to re-run: finished steps are skipped.
 # Options (environment variables):
-#   RECLAIMER_METAL=yes|no      also install the Apple D3DMetal variant without asking
+#   RECLAIMER_METAL=yes         also install the experimental Apple D3DMetal variant (slower menu in testing)
 #   RECLAIMER_MCC_FROM=<dir>    copy existing MCC game files from <dir> instead of downloading them from Steam
 #   RECLAIMER_CACHE=<dir>       reuse already-downloaded archives from <dir>
 set -euo pipefail
 
-REPO_RAW=${RECLAIMER_REPO_RAW:-https://raw.githubusercontent.com/mattromano/reclaimer-mac/main}
+REPO_RAW=${RECLAIMER_REPO_RAW:-https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main}
 BASE=${RECLAIMER_HOME:-$HOME/Games/ProjectReclaimer}
 CACHE=${RECLAIMER_CACHE:-$BASE/downloads}
 STEAM_REL="drive_c/Program Files (x86)/Steam"
@@ -21,6 +21,7 @@ MCC_DEPOTS="976731 976738 976739"   # MCC base, Halo 3, Halo 3 multiplayer (~35 
 # name|url|sha256
 WINE_PKG="wine-staging-11.18-osx64.tar.xz|https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-staging-11.18-osx64.tar.xz|b63704b91af269bc026a87f12bd297c4a50caaf570c322e600b6621ef918f127"
 DXVK_PKG="dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz|https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz|acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477"
+MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-macos.tar|f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e"
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
 # Metal version: Sikarugir wrapper (bundles Apple D3DMetal 3.0) + CrossOver 24.0.7 Wine engine
@@ -31,7 +32,6 @@ RECLAIMER_RELEASES=https://github.com/ProjectReclaimer/project-reclaimer-release
 bold() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die() { printf '\n\033[31mError: %s\033[0m\n' "$*" >&2; exit 1; }
-ask() { local a; read -r -p "    $1 [y/N] " a </dev/tty; [[ "$a" =~ ^[Yy] ]]; }
 
 fetch() {  # fetch "name|url|sha256" -> path of the verified file in $CACHE
   local name=${1%%|*} rest=${1#*|}; local url=${rest%%|*} sum=${rest##*|} f="$CACHE/${1%%|*}"
@@ -72,9 +72,16 @@ if ! /usr/bin/pgrep -q oahd; then
   softwareupdate --install-rosetta --agree-to-license || die "Rosetta install failed."
 fi
 
-bold "Wine (Gcenx Wine Staging 11.18)"
+bold "Wine (Gcenx Wine Staging 11.18) with MoltenVK 1.4.2"
 if [ ! -x "$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin/wine" ]; then
   mkdir -p "$BASE/wine"; tar -xf "$(fetch "$WINE_PKG")" -C "$BASE/wine"
+fi
+# Wine bundles MoltenVK 1.4.0; 1.4.2 fixes device-loss / argument-buffer bugs behind a GPU address fault seen on
+# heavy modded maps, and used ~25% less GPU at the menu
+MVK_LIB="$BASE/wine/Wine Staging.app/Contents/Resources/wine/lib/libMoltenVK.dylib"
+if ! strings "$MVK_LIB" | grep -qx '1.4.2'; then
+  tar -xf "$(fetch "$MOLTENVK_PKG")" -C "$CACHE" MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+  cp "$CACHE/MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" "$MVK_LIB"
 fi
 note "ok"
 
@@ -159,15 +166,10 @@ rm -rf "$T"
 note "ok"
 
 # --- optional Metal variant ---------------------------------------------------------------------------------------
-METAL=${RECLAIMER_METAL:-}
-if [ -z "$METAL" ]; then
-  bold "Optional: Metal version (Apple D3DMetal)"
-  note "Uses CrossOver 24 Wine + Apple D3DMetal (via the Sikarugir wrapper). Draws straight to Metal."
-  note "D3DMetal is Apple software under Apple's license: https://developer.apple.com/games/game-porting-toolkit/"
-  note "Only install it if you accept that license (free Apple developer account)."
-  if ask "Install the Metal version too?"; then METAL=yes; else METAL=no; fi
-fi
+# Experimental, opt-in only: CrossOver 24 + Apple D3DMetal. Its menu felt laggy in testing, so it isn't offered by default.
+METAL=${RECLAIMER_METAL:-no}
 if [ "$METAL" = yes ]; then
+  note "D3DMetal is Apple software under Apple's license: https://developer.apple.com/games/game-porting-toolkit/"
   bold "Metal version"
   FW="$BASE/wine-metal/Wine Metal.app/Contents/Frameworks"
   if [ ! -x "$FW/wswine.bundle/bin/wine" ]; then
@@ -199,10 +201,11 @@ mkdir -p "${RECLAIMER_APPS_DIR:-$HOME/Applications}"
 script_file scripts/make_app.sh "$BASE/tools/make_app.sh"
 /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer" wine
 [ "$METAL" = yes ] && /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer Metal" metal
-rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack"
+rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack" "$CACHE/MoltenVK"
 
 bold "Done"
 note "Open \"Project Reclaimer\" from Spotlight, Launchpad or ~/Applications."
-[ "$METAL" = yes ] && note "\"Project Reclaimer Metal\" is the Apple D3DMetal version; try both and keep the smoother one."
+[ "$METAL" = yes ] && note "\"Project Reclaimer Metal\" is the experimental Apple D3DMetal version."
 note "First launch asks for your Steam account name (for Workshop mods) and builds a Forge cache (~1 min)."
+note "If a Project Reclaimer update ever stops you joining servers, re-run this installer, then restart the game."
 note "You can delete $CACHE to free ~1 GB."

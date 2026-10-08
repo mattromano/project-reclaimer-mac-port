@@ -18,7 +18,7 @@ and adds a **Project Reclaimer** app to your Mac.
 
 ## Install
 
-Open **Terminal** (Spotlight → "Terminal"), paste this line, press Return, and follow the prompts:
+Easiest: open **Terminal** (Spotlight → "Terminal"), paste this line, press Return, and follow the prompts:
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main/install.sh)"
@@ -37,9 +37,11 @@ What it does, in order:
 
 If anything fails, run the same command again: finished steps are skipped and the Steam download resumes.
 
-**Prefer double-clicking?** `scripts/make_dmg.sh` builds `Project Reclaimer Mac Port.dmg` with an
-**Install Project Reclaimer** file that opens Terminal and runs the same command. It isn't signed by Apple, so the
-first time macOS refuses it: click Done, then System Settings → Privacy & Security → **Open Anyway**.
+**Prefer double-clicking?** Download
+[Project-Reclaimer-Mac-Port.dmg](https://github.com/mattromano/project-reclaimer-mac-port/releases/latest/download/Project-Reclaimer-Mac-Port.dmg),
+open it and double-click **Install Project Reclaimer**: it opens Terminal and runs the same command. It isn't signed
+by Apple, so the first time macOS refuses it: click Done, then System Settings → Privacy & Security → **Open Anyway**.
+(`scripts/make_dmg.sh` builds the disk image.)
 
 ## Playing
 

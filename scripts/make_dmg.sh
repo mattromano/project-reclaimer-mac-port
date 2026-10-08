@@ -1,9 +1,9 @@
 #!/bin/bash
-# make_dmg.sh [out.dmg]: build "Project Reclaimer Mac Port.dmg" with double-click installer/uninstaller files.
+# make_dmg.sh [out.dmg]: build Project-Reclaimer-Mac-Port.dmg with double-click installer/uninstaller files.
 # They run the same one-line installer from GitHub, so the disk image never goes stale.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-OUT=${1:-dist/Project Reclaimer Mac Port.dmg}
+OUT=${1:-dist/Project-Reclaimer-Mac-Port.dmg}
 RAW=https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main
 STAGE=$(mktemp -d)/"Project Reclaimer"
 mkdir -p "$STAGE" "$(dirname "$OUT")"

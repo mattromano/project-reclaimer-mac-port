@@ -5,8 +5,9 @@ Watches Reclaimer's client log for mods it can't get from Steam Workshop (there 
 "Mod <title> not downloaded: ... Workshop" (Workshop-only mods), and "Workshop for <title> unavailable ... using the
 server" (the game falls back to downloading from the game servers, which cap mod sharing at ~2.5 MB/s each).
 Resolves the Workshop item ID, downloads it with DepotDownloader (saved Steam login, Steam's CDN) into Steam's
-Workshop folder inside the Wine prefix, and posts a macOS notification. The player then presses Try Again, or
-leaves and rejoins to stop the slower server download.
+Workshop folder inside the Wine prefix, records it in Steam's Workshop manifest (appworkshop_976730.acf, which the
+game checks and only the Steam client normally writes), and posts a macOS notification. The player then presses
+Try Again, or leaves and rejoins to stop the slower server download. Mods updated on Workshop are downloaded again.
 
 Usage: workshop_helper.py watch | get <workshop id or title>... | setup
 """
@@ -124,11 +125,35 @@ def resolve(item):
     return id_from_modinfo(item) or id_from_search(item)
 
 
-DONE = ".reclaimer-complete"  # written only after DepotDownloader finishes the whole item
+# written only after DepotDownloader finishes the whole item; holds the Workshop version that was downloaded
+DONE = ".reclaimer-complete"
 
 
-def installed(wid):
-    return (WORKSHOP / wid / DONE).exists()
+def installed_version(wid):
+    """{"timeupdated", "manifest"} of the downloaded copy, or None when the item isn't fully downloaded."""
+    marker = WORKSHOP / wid / DONE
+    if not marker.exists():
+        return None
+    try:
+        v = json.loads(marker.read_text())
+        if isinstance(v, dict) and "timeupdated" in v:
+            return v
+    except ValueError:
+        pass
+    return {}  # finished before versions were recorded
+
+
+def record_version(wid, details):
+    v = {"timeupdated": int(details.get("time_updated", 0)), "manifest": str(details.get("hcontent_file", "0"))}
+    (WORKSHOP / wid / DONE).write_text(json.dumps(v) + "\n")
+    return v
+
+
+def up_to_date(wid, details):
+    v = installed_version(wid)
+    if v == {}:  # older marker: assume the copy matches what Steam has now, and remember that
+        v = record_version(wid, details)
+    return v is not None and v["timeupdated"] >= int(details.get("time_updated", 0))
 
 
 ACF = WORKSHOP.parent.parent / f"appworkshop_{APP_ID}.acf"
@@ -148,8 +173,9 @@ def vdf(d, indent=0):
 def write_manifest():
     """Record every finished item in steamapps/workshop/appworkshop_976730.acf, as the Steam client would.
 
-    Reclaimer only treats a Workshop mod as installed when this manifest lists it with the item's current version
-    (time updated and content manifest from Steam); without the Steam client nothing writes it."""
+    Reclaimer only treats a Workshop mod as installed and current when this manifest lists it with the downloaded
+    version (time updated, content manifest) matching Steam's latest; without the Steam client nothing writes it.
+    An outdated copy is listed as such, so the game asks for it again and the helper downloads the update."""
     wids = sorted(d.name for d in WORKSHOP.iterdir() if d.is_dir() and (d / DONE).exists()) if WORKSHOP.exists() else []
     if not wids:
         return
@@ -160,32 +186,36 @@ def write_manifest():
         f = details.get(wid)
         if not f:
             continue
-        size = sum(p.stat().st_size for p in (WORKSHOP / wid).rglob("*") if p.is_file() and ".DepotDownloader" not in p.parts)
+        size = sum(p.stat().st_size for p in (WORKSHOP / wid).rglob("*") if p.is_file() and ".DepotDownloader" not in p.parts and p.name != DONE)
         total += size
-        manifest, updated = f.get("hcontent_file", "0"), f.get("time_updated", 0)
+        latest_manifest, latest_updated = f.get("hcontent_file", "0"), f.get("time_updated", 0)
+        v = installed_version(wid) or record_version(wid, f)
+        manifest, updated = v["manifest"], v["timeupdated"]
         installed_items[wid] = {"size": size, "timeupdated": updated, "manifest": manifest}
         item_details[wid] = {"manifest": manifest, "timeupdated": updated, "timetouched": now, "subscribedby": "0",
-                             "latest_timeupdated": updated, "latest_manifest": manifest}
-    acf = {"AppWorkshop": {"appid": APP_ID, "SizeOnDisk": total, "NeedsUpdate": 0, "NeedsDownload": 0,
+                             "latest_timeupdated": latest_updated, "latest_manifest": latest_manifest}
+    outdated = int(any(d["timeupdated"] < d["latest_timeupdated"] for d in item_details.values()))
+    acf = {"AppWorkshop": {"appid": APP_ID, "SizeOnDisk": total, "NeedsUpdate": outdated, "NeedsDownload": 0,
                            "TimeLastUpdated": now, "TimeLastAppRan": now,
                            "WorkshopItemsInstalled": installed_items, "WorkshopItemDetails": item_details}}
     ACF.write_text(vdf(acf))
 
 
-def download(wid, label, ready_hint="Press Try Again in the game."):
+def download(wid, label, details, ready_hint="Press Try Again in the game."):
     name = account()
     if not name:
         notify("No Steam account name set; mod download skipped.")
         return False
     dest = WORKSHOP / wid
     dest.mkdir(parents=True, exist_ok=True)
+    (dest / DONE).unlink(missing_ok=True)  # an update in progress is not a finished copy
     notify(f"Downloading {label} from Steam Workshop...")
     cmd = [str(DEPOT), "-app", APP_ID, "-pubfile", wid, "-username", name,
            "-remember-password", "-dir", str(dest)]
     # stdin closed: if the saved login expired DepotDownloader fails instead of waiting for a password
     p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if p.returncode == 0 and (dest / "ModInfo.json").exists():
-        (dest / DONE).write_text(time.strftime("%Y-%m-%d %H:%M:%S\n"))
+        record_version(wid, details)
         write_manifest()
         notify(f"{label} is ready. {ready_hint}")
         return True
@@ -211,11 +241,14 @@ def fetch(item, ready_hint="Press Try Again in the game."):
     if not wid:
         notify(f"Could not find {item} on Steam Workshop.")
         return False
-    if installed(wid):
+    details = next(iter(workshop_details([wid])), {})
+    title = details.get("title") or item
+    if up_to_date(wid, details):
         write_manifest()
         return True
-    title = next((f.get("title") for f in workshop_details([wid]) if f.get("title")), item)
-    return download(wid, title, ready_hint)
+    if installed_version(wid) is not None:
+        log(f"{title} has an update on Steam Workshop")
+    return download(wid, title, details, ready_hint)
 
 
 def fetcher(jobs):

@@ -51,7 +51,8 @@ by Apple, so the first time macOS refuses it: click Done, then System Settings �
   which cap sharing at ~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper running next
   to the game fetches the same mods from Steam's CDN instead (~40 MB/s measured: 1.6 GB in 37 s) and posts a
   notification when each is ready: press **Try Again**, or leave and rejoin if the game was still downloading it
-  from the server. Mods are 1–2 GB each.
+  from the server. Mods are 1–9 GB each. The helper signs in to Steam with the QR login saved at install; when
+  that expires, a Terminal window shows a new QR code to scan.
 - Change graphics in the game's own Settings. To restore the tuned defaults, re-run the installer.
 
 ## Troubleshooting
@@ -88,6 +89,8 @@ The problems found while porting it, and what the scripts do about each:
 | DXVK rebuilt its swapchain every frame (a 1080p swapchain in a differently sized full-screen window), stalling the GPU each time | Windowed at exactly the render size: ~95 → ~120 fps uncapped |
 | GPU address fault ("graphics card stopped responding") on heavy modded maps | MoltenVK 1.4.2 (device-loss and argument-buffer fixes) instead of Wine's bundled 1.4.0 |
 | No Steam client under Wine (its UI renders black) | DepotDownloader for game files and Workshop mods, using Steam's QR sign-in |
+| Without Steam, the game downloads Workshop mods from game servers (capped ~2.5 MB/s each) or refuses Workshop-only mods ("Start Steam…") | The Workshop helper fetches them from Steam's CDN instead (~40–110 MB/s measured) |
+| Downloaded mods still showed "Start Steam…": the game only counts a mod as installed when Steam's `appworkshop_976730.acf` lists its current version, and only the Steam client writes that file | The helper writes it for every downloaded mod, with versions from Steam's public Workshop API, and downloads mods again when they update |
 | Multi-GB mod downloads landing in iCloud-synced `~/Documents` | The Wine prefix gets its own Documents folder |
 
 ### Experimental: Apple D3DMetal

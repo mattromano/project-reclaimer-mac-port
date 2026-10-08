@@ -131,6 +131,47 @@ def installed(wid):
     return (WORKSHOP / wid / DONE).exists()
 
 
+ACF = WORKSHOP.parent.parent / f"appworkshop_{APP_ID}.acf"
+
+
+def vdf(d, indent=0):
+    tab = "\t" * indent
+    out = ""
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out += f'{tab}"{k}"\n{tab}{{\n{vdf(v, indent + 1)}{tab}}}\n'
+        else:
+            out += f'{tab}"{k}"\t\t"{v}"\n'
+    return out
+
+
+def write_manifest():
+    """Record every finished item in steamapps/workshop/appworkshop_976730.acf, as the Steam client would.
+
+    Reclaimer only treats a Workshop mod as installed when this manifest lists it with the item's current version
+    (time updated and content manifest from Steam); without the Steam client nothing writes it."""
+    wids = sorted(d.name for d in WORKSHOP.iterdir() if d.is_dir() and (d / DONE).exists()) if WORKSHOP.exists() else []
+    if not wids:
+        return
+    details = {f["publishedfileid"]: f for f in workshop_details(wids) if f.get("result") == 1}
+    now = int(time.time())
+    installed_items, item_details, total = {}, {}, 0
+    for wid in wids:
+        f = details.get(wid)
+        if not f:
+            continue
+        size = sum(p.stat().st_size for p in (WORKSHOP / wid).rglob("*") if p.is_file() and ".DepotDownloader" not in p.parts)
+        total += size
+        manifest, updated = f.get("hcontent_file", "0"), f.get("time_updated", 0)
+        installed_items[wid] = {"size": size, "timeupdated": updated, "manifest": manifest}
+        item_details[wid] = {"manifest": manifest, "timeupdated": updated, "timetouched": now, "subscribedby": "0",
+                             "latest_timeupdated": updated, "latest_manifest": manifest}
+    acf = {"AppWorkshop": {"appid": APP_ID, "SizeOnDisk": total, "NeedsUpdate": 0, "NeedsDownload": 0,
+                           "TimeLastUpdated": now, "TimeLastAppRan": now,
+                           "WorkshopItemsInstalled": installed_items, "WorkshopItemDetails": item_details}}
+    ACF.write_text(vdf(acf))
+
+
 def download(wid, label, ready_hint="Press Try Again in the game."):
     name = account()
     if not name:
@@ -145,6 +186,7 @@ def download(wid, label, ready_hint="Press Try Again in the game."):
     p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if p.returncode == 0 and (dest / "ModInfo.json").exists():
         (dest / DONE).write_text(time.strftime("%Y-%m-%d %H:%M:%S\n"))
+        write_manifest()
         notify(f"{label} is ready. {ready_hint}")
         return True
     if re.search(r"password|login|logon|auth", p.stdout + p.stderr, re.I):
@@ -170,6 +212,7 @@ def fetch(item, ready_hint="Press Try Again in the game."):
         notify(f"Could not find {item} on Steam Workshop.")
         return False
     if installed(wid):
+        write_manifest()
         return True
     title = next((f.get("title") for f in workshop_details([wid]) if f.get("title")), item)
     return download(wid, title, ready_hint)
@@ -196,6 +239,10 @@ def watch():
         log("another helper is already watching; exiting")
         return
     log("watching " + str(LOG))
+    try:
+        write_manifest()  # mods downloaded before the helper wrote Steam's manifest
+    except Exception as e:
+        log(f"could not update the Workshop manifest: {e}")
     seen, pos, last_seen = set(), 0, time.time()
     jobs = queue.Queue()
     threading.Thread(target=fetcher, args=(jobs,), daemon=True).start()

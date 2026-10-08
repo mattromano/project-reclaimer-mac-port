@@ -28,6 +28,7 @@ DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownl
 CX_TEMPLATE_PKG="Template-1.0.17.tar.xz|https://github.com/Sikarugir-App/Template/releases/download/v1.0/Template-1.0.17.tar.xz|fe28059d34b20a3a9bd8c51ddbf1aa63dd4f5e107a020f6fe70e35f24534a08a"
 CX_ENGINE_PKG="WS12WineCX24.0.7_7.tar.xz|https://github.com/Sikarugir-App/Engines/releases/download/v1.0/WS12WineCX24.0.7_7.tar.xz|203f9e9fd6c2cc77e6525d798a434ced326145db34a356355e05659d3445fd1c"
 RECLAIMER_RELEASES=https://github.com/ProjectReclaimer/project-reclaimer-releases/releases/latest/download
+SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
 
 bold() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -118,9 +119,16 @@ if [ ! -f "$BASE/prefix-wine/system.reg" ]; then
   WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
 fi
 unlink_documents "$BASE/prefix-wine"
-# DXVK-macOS goes into this prefix's system32 so the shared game folder stays free of graphics DLLs
+# DXVK-macOS goes into this prefix's system32 so the shared game folder stays free of graphics DLLs. Its d3d11.dll is
+# renamed d3d11_dxvk.dll behind spinfix's d3d11.dll, which forwards to it and stops Halo 3's engine thread from
+# spinning a full CPU core on the clock between frames (see spinfix/spinfix.c)
+SYS32="$BASE/prefix-wine/drive_c/windows/system32"
 tar -xzf "$(fetch "$DXVK_PKG")" -C "$CACHE"
-cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/"{d3d11.dll,d3d10core.dll} "$BASE/prefix-wine/drive_c/windows/system32/"
+cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/d3d10core.dll" "$SYS32/"
+cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/d3d11.dll" "$SYS32/d3d11_dxvk.dll"
+script_file spinfix/d3d11.dll "$CACHE/spinfix-d3d11.dll"
+[ "$(shasum -a 256 "$CACHE/spinfix-d3d11.dll" | cut -d' ' -f1)" = "$SPINFIX_SHA" ] || die "checksum mismatch for spinfix/d3d11.dll"
+cp "$CACHE/spinfix-d3d11.dll" "$SYS32/d3d11.dll"
 note "ok"
 
 bold "DepotDownloader (downloads your game files from Steam)"
@@ -205,7 +213,7 @@ mkdir -p "${RECLAIMER_APPS_DIR:-$HOME/Applications}"
 script_file scripts/make_app.sh "$BASE/tools/make_app.sh"
 /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer" wine
 [ "$METAL" = yes ] && /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer Metal" metal
-rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack" "$CACHE/MoltenVK"
+rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack" "$CACHE/MoltenVK" "$CACHE/spinfix-d3d11.dll"
 
 bold "Done"
 note "Open \"Project Reclaimer\" from Spotlight, Launchpad or ~/Applications."

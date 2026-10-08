@@ -6,8 +6,8 @@ and adds a **Project Reclaimer** app to your Mac.
 
 - **Graphics:** Wine 11.18 + DXVK-macOS + MoltenVK 1.4.2 (DirectX 11 → Vulkan → Metal)
 - **Defaults:** windowed at the largest size that fits your screen (1920×1080 on most Macs), Low quality, 60 fps cap
-- **Measured on an M2 Max:** steady 60 fps at the menu using ~40% GPU and ~2.5 CPU cores; Big Team Battle on
-  Hugegrass (40+ players, modded) playable
+- **Measured on an M2 Max:** steady 60 fps; ~1.5 CPU cores and ~16% of the GPU's capacity at the menu, ~0.9 cores
+  and ~24% of the GPU in a Slayer match on Valhalla; Big Team Battle on Hugegrass (40+ players, modded) playable
 
 ## Requirements
 
@@ -76,6 +76,7 @@ The problems found while porting it, and what the scripts do about each:
 | Crash mid-match in `xaudio2_9.dll`, and poor audio | MCC's `xaudio2_9redist.dll` hands off to Wine's FAudio on "Windows 10"; `xaudio2_9=d` keeps Microsoft's own mixer |
 | Joins refused / engine crashes binding `127.x.y.z` | A LaunchDaemon aliases `127.0.0.x`–`127.0.3.x` and `127.3.1.x` on `lo0` at boot (0.9.8 added `127.0.2.x`); re-running the installer updates it |
 | Uncapped frame rate kept the Mac maxed out even at the menu | 60 fps cap |
+| Halo 3's engine thread polls the clock ~40,000 times a second between frames: one full CPU core under Rosetta, menu and match alike | `spinfix`: a small `d3d11.dll` in front of DXVK that makes halo3.dll's clock polling sleep 1 ms once it reads the clock 8+ times within a millisecond. Menu ~2.4 → ~1.5 cores, match ~1.75 → ~0.9, same 60 fps. Source in `spinfix/`; set `RECLAIMER_SPINFIX_US=0` to turn it off |
 | DXVK rebuilt its swapchain every frame (a 1080p swapchain in a differently sized full-screen window), stalling the GPU each time | Windowed at exactly the render size: ~95 → ~120 fps uncapped |
 | GPU address fault ("graphics card stopped responding") on heavy modded maps | MoltenVK 1.4.2 (device-loss and argument-buffer fixes) instead of Wine's bundled 1.4.0 |
 | No Steam client under Wine (its UI renders black) | DepotDownloader for game files and Workshop mods, using Steam's QR sign-in |

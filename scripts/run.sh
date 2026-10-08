@@ -33,7 +33,9 @@ if [ "$GFX" = metal ]; then
 else
   export WINEPREFIX="$BASE/prefix-wine"
   WINE="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin/wine"
-  # DXVK-macOS d3d11/d3d10core in this prefix's system32 (Wine's own D3D11 cannot create a device on MoltenVK)
+  # DXVK-macOS d3d11/d3d10core in this prefix's system32 (Wine's own D3D11 cannot create a device on MoltenVK).
+  # d3d11.dll there is spinfix, which forwards to DXVK (d3d11_dxvk.dll) and makes Halo 3's engine thread sleep instead
+  # of spinning on the clock between frames: about one CPU core less. RECLAIMER_SPINFIX_US=0 turns it off.
   export WINEDLLOVERRIDES="$OVERRIDES;d3d11,d3d10core=n,b"
   export DXVK_ASYNC=1
   # DXVK logs every swapchain rebuild at info level, which bloats the log

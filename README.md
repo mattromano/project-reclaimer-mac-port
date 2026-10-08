@@ -37,6 +37,10 @@ What it does, in order:
 
 If anything fails, run the same command again: finished steps are skipped and the Steam download resumes.
 
+**Prefer double-clicking?** `scripts/make_dmg.sh` builds `Project Reclaimer Mac Port.dmg` with an
+**Install Project Reclaimer** file that opens Terminal and runs the same command. It isn't signed by Apple, so the
+first time macOS refuses it: click Done, then System Settings → Privacy & Security → **Open Anyway**.
+
 ## Playing
 
 - Open **Project Reclaimer** from Spotlight or Launchpad. The first launch asks for your Steam account name (used to

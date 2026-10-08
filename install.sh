@@ -58,7 +58,7 @@ unlink_documents() {  # give a prefix its own Documents folder instead of Wine's
 }
 
 # ---------------------------------------------------------------------------------------------------------------
-bold "Project Reclaimer for Mac"
+bold "Project Reclaimer Mac Port"
 note "Installs into: $BASE"
 [ "$(uname -m)" = arm64 ] || die "This needs an Apple Silicon Mac (M1 or newer)."
 MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)

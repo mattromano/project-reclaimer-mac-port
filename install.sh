@@ -79,8 +79,12 @@ fi
 # Wine bundles MoltenVK 1.4.0; 1.4.2 fixes device-loss / argument-buffer bugs behind a GPU address fault seen on
 # heavy modded maps, and used ~25% less GPU at the menu
 MVK_LIB="$BASE/wine/Wine Staging.app/Contents/Resources/wine/lib/libMoltenVK.dylib"
-if ! strings "$MVK_LIB" | grep -qx '1.4.2'; then
+# (grep -c reads everything: an early-exiting grep SIGPIPEs strings, and under pipefail the check always failed)
+if [ "$(strings "$MVK_LIB" | grep -cx '1.4.2')" = 0 ]; then
   tar -xf "$(fetch "$MOLTENVK_PKG")" -C "$CACHE" MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+  # replace, don't overwrite in place: macOS caches a signed library's code signature per file, and Rosetta then
+  # refuses the rewritten file ("Attachment of code signature supplement failed")
+  rm -f "$MVK_LIB"
   cp "$CACHE/MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" "$MVK_LIB"
 fi
 note "ok"

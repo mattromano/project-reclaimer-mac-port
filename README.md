@@ -47,9 +47,11 @@ by Apple, so the first time macOS refuses it: click Done, then System Settings �
 
 - Open **Project Reclaimer** from Spotlight or Launchpad. The first launch asks for your Steam account name (used to
   download Workshop mods) and spends about a minute building a Forge cache.
-- **Workshop mods download themselves.** Servers either share their mods directly or need them from Steam Workshop.
-  For Workshop-only mods the game shows a "Start Steam…" error; a helper running next to the game downloads the mod
-  and posts a notification when it's ready. Then press **Try Again**. Mods are 1–2 GB each.
+- **Workshop mods download themselves.** Without the Steam client, the game downloads mods from the game servers,
+  which cap sharing at ~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper running next
+  to the game fetches the same mods from Steam's CDN instead (~40 MB/s measured: 1.6 GB in 37 s) and posts a
+  notification when each is ready: press **Try Again**, or leave and rejoin if the game was still downloading it
+  from the server. Mods are 1–2 GB each.
 - Change graphics in the game's own Settings. To restore the tuned defaults, re-run the installer.
 
 ## Troubleshooting

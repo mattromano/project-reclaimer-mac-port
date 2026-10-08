@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Fetch Steam Workshop mods for Project Reclaimer under Wine, without the Steam client.
 
-Watches Reclaimer's client log for "Mod <title> not downloaded: ... Workshop" lines,
-resolves the Workshop item ID, downloads it with DepotDownloader (saved Steam login)
-into Steam's Workshop folder inside the Wine prefix, and posts a macOS notification.
-The player then presses Try Again in the game.
+Watches Reclaimer's client log for mods it can't get from Steam Workshop (there is no Steam client under Wine):
+"Mod <title> not downloaded: ... Workshop" (Workshop-only mods), and "Workshop for <title> unavailable ... using the
+server" (the game falls back to downloading from the game servers, which cap mod sharing at ~2.5 MB/s each).
+Resolves the Workshop item ID, downloads it with DepotDownloader (saved Steam login, Steam's CDN) into Steam's
+Workshop folder inside the Wine prefix, and posts a macOS notification. The player then presses Try Again, or
+leaves and rejoins to stop the slower server download.
 
 Usage: workshop_helper.py watch | get <workshop id or title>... | setup
 """
@@ -12,7 +14,9 @@ import json
 import os
 import re
 import subprocess
+import queue
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -34,6 +38,7 @@ PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
 GAME_PROCESS = r"project-reclaimer-v[0-9.]+\.exe game-client"
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")
+FALLBACK = re.compile(r"^Workshop for (.+?) unavailable: .*using the server")
 UA = {"User-Agent": "Mozilla/5.0"}
 
 
@@ -126,7 +131,7 @@ def installed(wid):
     return (WORKSHOP / wid / DONE).exists()
 
 
-def download(wid, label):
+def download(wid, label, ready_hint="Press Try Again in the game."):
     name = account()
     if not name:
         notify("No Steam account name set; mod download skipped.")
@@ -140,7 +145,7 @@ def download(wid, label):
     p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if p.returncode == 0 and (dest / "ModInfo.json").exists():
         (dest / DONE).write_text(time.strftime("%Y-%m-%d %H:%M:%S\n"))
-        notify(f"{label} is ready. Press Try Again in the game.")
+        notify(f"{label} is ready. {ready_hint}")
         return True
     if re.search(r"password|login|logon|auth", p.stdout + p.stderr, re.I):
         notify("Steam login expired. Opening Terminal to sign in with a QR code.")
@@ -152,13 +157,14 @@ def download(wid, label):
 
 
 def relogin(name):
+    # no -username: DepotDownloader refuses it with -qr, and saves the QR login under the account's name anyway
     cmd = (f"{DEPOT} -app {APP_ID} -pubfile 2984061723 -manifest-only -qr -remember-password "
-           f"-username {name} -dir /tmp/reclaimer-login-check; exit")
+           f"-dir /tmp/reclaimer-login-check; exit")
     subprocess.run(["osascript", "-e", f'tell application "Terminal" to do script {json.dumps(cmd)}',
                     "-e", 'tell application "Terminal" to activate'], check=False)
 
 
-def fetch(item):
+def fetch(item, ready_hint="Press Try Again in the game."):
     wid = resolve(item)
     if not wid:
         notify(f"Could not find {item} on Steam Workshop.")
@@ -166,7 +172,17 @@ def fetch(item):
     if installed(wid):
         return True
     title = next((f.get("title") for f in workshop_details([wid]) if f.get("title")), item)
-    return download(wid, title)
+    return download(wid, title, ready_hint)
+
+
+def fetcher(jobs):
+    """One download at a time (DepotDownloader shares one saved login), off the log-watching loop."""
+    while True:
+        item, hint = jobs.get()
+        try:
+            fetch(item, hint)
+        except Exception as e:  # keep going after network or parse errors
+            notify(f"Could not download {item}: {e}")
 
 
 def game_running():
@@ -181,6 +197,8 @@ def watch():
         return
     log("watching " + str(LOG))
     seen, pos, last_seen = set(), 0, time.time()
+    jobs = queue.Queue()
+    threading.Thread(target=fetcher, args=(jobs,), daemon=True).start()
     # keep going until the game has been gone for 60 s straight: one missed check (or Reclaimer restarting itself
     # after an update) used to stop the helper while the game was still running
     while time.time() - last_seen < 60:
@@ -197,14 +215,18 @@ def watch():
         except OSError:
             chunk = b""
         for line in chunk.decode("utf-8", "replace").splitlines():
-            m = FAILED.match(line.strip())
+            line = line.strip()
+            m = FAILED.match(line)
             if m and m.group(1) not in seen:
                 seen.add(m.group(1))
                 log("game could not download Workshop mod: " + m.group(1))
-                try:
-                    fetch(m.group(1))
-                except Exception as e:  # keep watching after network or parse errors
-                    notify(f"Could not download {m.group(1)}: {e}")
+                jobs.put((m.group(1), "Press Try Again in the game."))
+                continue
+            m = FALLBACK.match(line)
+            if m and m.group(1) not in seen:
+                seen.add(m.group(1))
+                log("game is downloading Workshop mod from servers instead: " + m.group(1))
+                jobs.put((m.group(1), "If the game is still downloading it, leave and rejoin to use this copy."))
         time.sleep(2)
     log("game exited; helper stopping")
 

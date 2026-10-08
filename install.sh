@@ -1,0 +1,203 @@
+#!/bin/bash
+# Project Reclaimer for Mac: installs Halo 3 (MCC) + Project Reclaimer under Wine on Apple Silicon.
+#
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/mattromano/reclaimer-mac/main/install.sh)"
+#
+# Everything lives in ~/Games/ProjectReclaimer (override with RECLAIMER_HOME). Safe to re-run: finished steps are skipped.
+# Options (environment variables):
+#   RECLAIMER_METAL=yes|no      also install the Apple D3DMetal variant without asking
+#   RECLAIMER_MCC_FROM=<dir>    copy existing MCC game files from <dir> instead of downloading them from Steam
+#   RECLAIMER_CACHE=<dir>       reuse already-downloaded archives from <dir>
+set -euo pipefail
+
+REPO_RAW=${RECLAIMER_REPO_RAW:-https://raw.githubusercontent.com/mattromano/reclaimer-mac/main}
+BASE=${RECLAIMER_HOME:-$HOME/Games/ProjectReclaimer}
+CACHE=${RECLAIMER_CACHE:-$BASE/downloads}
+STEAM_REL="drive_c/Program Files (x86)/Steam"
+MCC_REL="$STEAM_REL/steamapps/common/Halo The Master Chief Collection"
+MCC_APP=976730
+MCC_DEPOTS="976731 976738 976739"   # MCC base, Halo 3, Halo 3 multiplayer (~35 GB)
+
+# name|url|sha256
+WINE_PKG="wine-staging-11.18-osx64.tar.xz|https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-staging-11.18-osx64.tar.xz|b63704b91af269bc026a87f12bd297c4a50caaf570c322e600b6621ef918f127"
+DXVK_PKG="dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz|https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz|acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477"
+MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
+DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
+# Metal version: Sikarugir wrapper (bundles Apple D3DMetal 3.0) + CrossOver 24.0.7 Wine engine
+CX_TEMPLATE_PKG="Template-1.0.17.tar.xz|https://github.com/Sikarugir-App/Template/releases/download/v1.0/Template-1.0.17.tar.xz|fe28059d34b20a3a9bd8c51ddbf1aa63dd4f5e107a020f6fe70e35f24534a08a"
+CX_ENGINE_PKG="WS12WineCX24.0.7_7.tar.xz|https://github.com/Sikarugir-App/Engines/releases/download/v1.0/WS12WineCX24.0.7_7.tar.xz|203f9e9fd6c2cc77e6525d798a434ced326145db34a356355e05659d3445fd1c"
+RECLAIMER_RELEASES=https://github.com/ProjectReclaimer/project-reclaimer-releases/releases/latest/download
+
+bold() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
+die() { printf '\n\033[31mError: %s\033[0m\n' "$*" >&2; exit 1; }
+ask() { local a; read -r -p "    $1 [y/N] " a </dev/tty; [[ "$a" =~ ^[Yy] ]]; }
+
+fetch() {  # fetch "name|url|sha256" -> path of the verified file in $CACHE
+  local name=${1%%|*} rest=${1#*|}; local url=${rest%%|*} sum=${rest##*|} f="$CACHE/${1%%|*}"
+  if [ ! -f "$f" ] || [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" != "$sum" ]; then
+    note "downloading $name" >&2
+    curl -fL --progress-bar -o "$f.part" "$url" || die "download failed: $url"
+    mv "$f.part" "$f"
+  fi
+  [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sum" ] || die "checksum mismatch for $name"
+  printf '%s' "$f"
+}
+
+script_file() {  # copy a file from this repo (local checkout or GitHub) to $2
+  local here; here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
+  if [ -n "$here" ] && [ -f "$here/$1" ]; then cp "$here/$1" "$2"; else curl -fsSL "$REPO_RAW/$1" -o "$2"; fi
+}
+
+unlink_documents() {  # give a prefix its own Documents folder instead of Wine's link to ~/Documents
+  local d
+  for d in "$1"/drive_c/users/*/Documents; do
+    [ -L "$d" ] && { rm "$d"; mkdir -p "$d"; }
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+bold "Project Reclaimer for Mac"
+note "Installs into: $BASE"
+[ "$(uname -m)" = arm64 ] || die "This needs an Apple Silicon Mac (M1 or newer)."
+MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+[ "$MACOS_MAJOR" -ge 14 ] || die "This needs macOS 14 Sonoma or newer."
+FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
+[ "$FREE_GB" -ge 45 ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || die "Need about 45 GB free disk space (have ${FREE_GB} GB)."
+mkdir -p "$BASE"/{game,tools,logs} "$CACHE"
+
+if ! /usr/bin/pgrep -q oahd; then
+  bold "Installing Rosetta 2 (runs Intel Windows code on Apple Silicon)"
+  softwareupdate --install-rosetta --agree-to-license || die "Rosetta install failed."
+fi
+
+bold "Wine (Gcenx Wine Staging 11.18)"
+if [ ! -x "$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin/wine" ]; then
+  mkdir -p "$BASE/wine"; tar -xf "$(fetch "$WINE_PKG")" -C "$BASE/wine"
+fi
+note "ok"
+
+bold "Menu library (Mesa)"
+tar -xf "$(fetch "$MESA_PKG")" -C "$CACHE" x64/opengl32.dll x64/libgallium_wgl.dll
+cp "$CACHE/x64/opengl32.dll" "$CACHE/x64/libgallium_wgl.dll" "$BASE/game/"
+note "ok"
+
+bold "Project Reclaimer (latest release, checksum-verified)"
+curl -fsSL "$RECLAIMER_RELEASES/SHA256SUMS.txt" -o "$CACHE/SHA256SUMS.txt"
+EXE=$(tr -d '\r' < "$CACHE/SHA256SUMS.txt" | awk '{n=$2; sub(/^\*/,"",n); if (n ~ /^project-reclaimer-v[0-9.]+\.exe$/) {print n; exit}}')
+EXE_SUM=$(tr -d '\r' < "$CACHE/SHA256SUMS.txt" | awk -v e="$EXE" '{n=$2; sub(/^\*/,"",n); if (n == e) print $1}')
+[ -n "$EXE" ] || die "Could not find the Project Reclaimer download."
+if [ ! -f "$BASE/game/$EXE" ]; then
+  curl -fL --progress-bar "$RECLAIMER_RELEASES/$EXE" -o "$CACHE/$EXE"
+  [ "$(shasum -a 256 "$CACHE/$EXE" | cut -d' ' -f1)" = "$EXE_SUM" ] || die "Project Reclaimer checksum mismatch."
+  cp "$CACHE/$EXE" "$BASE/game/"
+fi
+note "$EXE"
+
+bold "Launcher and Workshop mod helper"
+for f in run.sh workshop_helper.py presets.py; do script_file "scripts/$f" "$BASE/game/$f"; done
+chmod +x "$BASE/game/run.sh" "$BASE/game/workshop_helper.py"
+note "ok"
+
+bold "Windows environment for the Wine version"
+WINE_BIN="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin"
+if [ ! -f "$BASE/prefix-wine/system.reg" ]; then
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wine" wineboot -i >/dev/null 2>&1 || true
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
+fi
+unlink_documents "$BASE/prefix-wine"
+# DXVK-macOS goes into this prefix's system32 so the shared game folder stays free of graphics DLLs
+tar -xzf "$(fetch "$DXVK_PKG")" -C "$CACHE"
+cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/"{d3d11.dll,d3d10core.dll} "$BASE/prefix-wine/drive_c/windows/system32/"
+note "ok"
+
+bold "DepotDownloader (downloads your game files from Steam)"
+if [ ! -x "$BASE/tools/DepotDownloader" ]; then
+  unzip -oq "$(fetch "$DEPOT_PKG")" -d "$BASE/tools"; chmod +x "$BASE/tools/DepotDownloader"
+fi
+note "ok"
+
+bold "Halo 3 game files (your Steam copy of Halo: The Master Chief Collection)"
+MCC_DIR="$BASE/prefix-wine/$MCC_REL"
+if [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ]; then
+  note "already installed"
+elif [ -n "${RECLAIMER_MCC_FROM:-}" ]; then
+  mkdir -p "$(dirname "$MCC_DIR")"; cp -cR "$RECLAIMER_MCC_FROM" "$MCC_DIR" 2>/dev/null || cp -R "$RECLAIMER_MCC_FROM" "$MCC_DIR"
+  note "copied from $RECLAIMER_MCC_FROM"
+else
+  note "You need to own Halo: The Master Chief Collection on Steam."
+  note "A QR code will appear: open the Steam app on your phone > Steam Guard / sign-in QR and scan it."
+  note "Only Halo 3 is downloaded (~35 GB). This can take a while."
+  read -r -p "    Press Return to continue..." _ </dev/tty
+  mkdir -p "$MCC_DIR"
+  # shellcheck disable=SC2086
+  "$BASE/tools/DepotDownloader" -app $MCC_APP -depot $MCC_DEPOTS -os windows -qr -remember-password \
+    -dir "$MCC_DIR" -validate </dev/tty || die "Steam download failed. Re-run the installer to resume."
+  [ -f "$MCC_DIR/halo3/halo3.dll" ] || die "Halo 3 files are missing after the download. Re-run the installer to resume."
+fi
+mkdir -p "$BASE/prefix-wine/$STEAM_REL/steamapps/workshop/content/$MCC_APP"
+
+bold "Local network addresses (needs your Mac password once)"
+note "Reclaimer talks to the game over 127.0.0.x / 127.0.1.x / 127.3.1.x; macOS only enables 127.0.0.1."
+note "This installs a small startup task (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist)."
+if [ ! -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
+  T=$(mktemp -d)
+  script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
+  script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
+  sudo /bin/sh -c "mkdir -p '/Library/Application Support/ProjectReclaimer' &&
+    install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '/Library/Application Support/ProjectReclaimer/reclaimer-loopback.sh' &&
+    install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
+    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" </dev/tty || die "Could not install the network startup task."
+  rm -rf "$T"
+fi
+note "ok"
+
+# --- optional Metal variant ---------------------------------------------------------------------------------------
+METAL=${RECLAIMER_METAL:-}
+if [ -z "$METAL" ]; then
+  bold "Optional: Metal version (Apple D3DMetal)"
+  note "Uses CrossOver 24 Wine + Apple D3DMetal (via the Sikarugir wrapper). Draws straight to Metal."
+  note "D3DMetal is Apple software under Apple's license: https://developer.apple.com/games/game-porting-toolkit/"
+  note "Only install it if you accept that license (free Apple developer account)."
+  if ask "Install the Metal version too?"; then METAL=yes; else METAL=no; fi
+fi
+if [ "$METAL" = yes ]; then
+  bold "Metal version"
+  FW="$BASE/wine-metal/Wine Metal.app/Contents/Frameworks"
+  if [ ! -x "$FW/wswine.bundle/bin/wine" ]; then
+    rm -rf "$BASE/wine-metal"; mkdir -p "$BASE/wine-metal"
+    tar -xf "$(fetch "$CX_TEMPLATE_PKG")" -C "$BASE/wine-metal"
+    mv "$BASE/wine-metal/Template-1.0.17.app" "$BASE/wine-metal/Wine Metal.app"
+    tar -xf "$(fetch "$CX_ENGINE_PKG")" -C "$FW"
+  fi
+  [ -f "$FW/renderer/d3dmetal/external/libd3dshared.dylib" ] || die "D3DMetal is missing from the Metal wrapper."
+  if [ ! -f "$BASE/prefix-metal/system.reg" ]; then
+    export DYLD_FALLBACK_LIBRARY_PATH="$FW:$FW/GStreamer.framework/Libraries:/usr/lib"
+    WINEPREFIX="$BASE/prefix-metal" WINEDEBUG=-all "$FW/wswine.bundle/bin/wine" wineboot -i >/dev/null 2>&1 || true
+    WINEPREFIX="$BASE/prefix-metal" WINEDEBUG=-all "$FW/wswine.bundle/bin/wineserver" -w
+    unset DYLD_FALLBACK_LIBRARY_PATH
+  fi
+  unlink_documents "$BASE/prefix-metal"
+  # share the game files and Workshop mods with the Wine version
+  mkdir -p "$BASE/prefix-metal/drive_c/Program Files (x86)"
+  [ -e "$BASE/prefix-metal/$STEAM_REL" ] || ln -s "$BASE/prefix-wine/$STEAM_REL" "$BASE/prefix-metal/$STEAM_REL"
+  note "ok"
+fi
+
+bold "Tuned graphics settings"
+/usr/bin/python3 -I "$BASE/game/presets.py" wine
+[ "$METAL" = yes ] && /usr/bin/python3 -I "$BASE/game/presets.py" metal
+
+bold "Apps"
+mkdir -p "${RECLAIMER_APPS_DIR:-$HOME/Applications}"
+script_file scripts/make_app.sh "$BASE/tools/make_app.sh"
+/bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer" wine
+[ "$METAL" = yes ] && /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer Metal" metal
+rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack"
+
+bold "Done"
+note "Open \"Project Reclaimer\" from Spotlight, Launchpad or ~/Applications."
+[ "$METAL" = yes ] && note "\"Project Reclaimer Metal\" is the Apple D3DMetal version; try both and keep the smoother one."
+note "First launch asks for your Steam account name (for Workshop mods) and builds a Forge cache (~1 min)."
+note "You can delete $CACHE to free ~1 GB."

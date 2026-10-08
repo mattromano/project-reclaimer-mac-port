@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Write tuned Project Reclaimer graphics settings for one variant, keeping every other setting.
+"""Write tuned Project Reclaimer graphics settings, keeping every other setting.
 
-Usage: presets.py wine|metal
+Usage: presets.py wine
 
 Measured on an M2 Max at the main menu (uncapped):
   wine, borderless       ~95 fps  (DXVK rebuilds its swapchain every frame: the 1080p swapchain never
                                    matches the full-screen window, and each rebuild idles the GPU)
   wine, windowed at render size  ~120 fps, no rebuilds
-  metal, borderless      ~130 fps
-Both are then capped at 60 fps. Reclaimer accepts only uniform "low"/"high" detail presets.
+Then capped at 60 fps. Reclaimer accepts only uniform "low"/"high" detail presets.
 """
 import json
 import os
@@ -17,7 +16,7 @@ import sys
 from pathlib import Path
 
 BASE = Path(os.environ.get("RECLAIMER_HOME", Path.home() / "Games" / "ProjectReclaimer"))
-PREFIXES = {"wine": BASE / "prefix-wine", "metal": BASE / "prefix-metal"}
+PREFIXES = {"wine": BASE / "prefix-wine"}
 # (window width, height, Reclaimer render_resolution) from largest to smallest
 WINDOW_SIZES = [(1920, 1080, "r1080p"), (1600, 900, "r900p"), (1280, 720, "r720p")]
 TITLE_BAR = 30  # points the window title bar takes (visibleFrame already excludes the menu bar and Dock)
@@ -50,19 +49,11 @@ def main(variant):
     path = profile / "settings.json"
     settings = json.loads(path.read_text()) if path.exists() else {"version": 1}
     graphics = settings.setdefault("graphics", {})
-    if variant == "wine":
-        sw, sh = screen_points()
-        w, h, res = next(((w, h, r) for w, h, r in WINDOW_SIZES if w <= sw and h + TITLE_BAR <= sh),
-                         WINDOW_SIZES[-1])
-        # windowed at exactly the render size: the swapchain matches the window, so DXVK never rebuilds it
-        graphics.update(display_mode="windowed", width=w, height=h, render_resolution=res,
-                        frame_limit=60, vsync=False)
-        level = "low"
-    else:
-        graphics.update(display_mode="borderless", render_resolution="native", frame_limit=60, vsync=True)
-        graphics.setdefault("width", 1280)
-        graphics.setdefault("height", 720)
-        level = "high"
+    sw, sh = screen_points()
+    w, h, res = next(((w, h, r) for w, h, r in WINDOW_SIZES if w <= sw and h + TITLE_BAR <= sh), WINDOW_SIZES[-1])
+    # windowed at exactly the render size: the swapchain matches the window, so DXVK never rebuilds it
+    graphics.update(display_mode="windowed", width=w, height=h, render_resolution=res, frame_limit=60, vsync=False)
+    level = "low"
     settings["quality"] = {"detail": detail(level), "split_screen": detail(level), "texture_filtering": "original",
                            "motion_blur": level == "high", "antialiasing": level == "high"}
     path.write_text(json.dumps(settings, indent=2) + "\n")

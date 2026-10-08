@@ -93,19 +93,10 @@ The problems found while porting it, and what the scripts do about each:
 | Downloaded mods still showed "Start Steam…": the game only counts a mod as installed when Steam's `appworkshop_976730.acf` lists its current version, and only the Steam client writes that file | The helper writes it for every downloaded mod, with versions from Steam's public Workshop API, and downloads mods again when they update |
 | Multi-GB mod downloads landing in iCloud-synced `~/Documents` | The Wine prefix gets its own Documents folder |
 
-### Experimental: Apple D3DMetal
-
-`RECLAIMER_METAL=yes` also installs **Project Reclaimer Metal**: CrossOver 24 Wine (Sikarugir build) with Apple's
-D3DMetal, which draws DirectX 11 straight to Metal. It works, but its menu felt laggy in testing, so it isn't
-installed by default. D3DMetal is Apple software under
-[Apple's license](https://developer.apple.com/games/game-porting-toolkit/). (Apple's own Game Porting Toolkit Wine 7.7
-can't be used: it lacks the socket polling Reclaimer's networking needs, so the server browser fails.)
-
 ## Credits
 
 [Project Reclaimer](https://projectreclaimer.dev) · [Wine](https://www.winehq.org) builds by
 [Gcenx](https://github.com/Gcenx) · [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) ·
 [MoltenVK](https://github.com/KhronosGroup/MoltenVK) · [Mesa for Windows](https://github.com/pal1000/mesa-dist-win) ·
-[DepotDownloader](https://github.com/SteamRE/DepotDownloader) · [Sikarugir](https://github.com/Sikarugir-App) (experimental
-Metal variant). Halo is a Microsoft/343 Industries game; you need your own copy. Not affiliated with Project Reclaimer,
-Microsoft or Valve.
+[DepotDownloader](https://github.com/SteamRE/DepotDownloader). Halo is a Microsoft/343 Industries game; you need your
+own copy. Not affiliated with Project Reclaimer, Microsoft or Valve.

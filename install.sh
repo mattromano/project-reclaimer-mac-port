@@ -5,7 +5,6 @@
 #
 # Everything lives in ~/Games/ProjectReclaimer (override with RECLAIMER_HOME). Safe to re-run: finished steps are skipped.
 # Options (environment variables):
-#   RECLAIMER_METAL=yes         also install the experimental Apple D3DMetal variant (slower menu in testing)
 #   RECLAIMER_MCC_FROM=<dir>    copy existing MCC game files from <dir> instead of downloading them from Steam
 #   RECLAIMER_CACHE=<dir>       reuse already-downloaded archives from <dir>
 set -euo pipefail
@@ -24,9 +23,6 @@ DXVK_PKG="dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz|https://github.com/Gce
 MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-macos.tar|f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e"
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
-# Metal version: Sikarugir wrapper (bundles Apple D3DMetal 3.0) + CrossOver 24.0.7 Wine engine
-CX_TEMPLATE_PKG="Template-1.0.17.tar.xz|https://github.com/Sikarugir-App/Template/releases/download/v1.0/Template-1.0.17.tar.xz|fe28059d34b20a3a9bd8c51ddbf1aa63dd4f5e107a020f6fe70e35f24534a08a"
-CX_ENGINE_PKG="WS12WineCX24.0.7_7.tar.xz|https://github.com/Sikarugir-App/Engines/releases/download/v1.0/WS12WineCX24.0.7_7.tar.xz|203f9e9fd6c2cc77e6525d798a434ced326145db34a356355e05659d3445fd1c"
 RECLAIMER_RELEASES=https://github.com/ProjectReclaimer/project-reclaimer-releases/releases/latest/download
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
 
@@ -177,47 +173,17 @@ fi
 rm -rf "$T"
 note "ok"
 
-# --- optional Metal variant ---------------------------------------------------------------------------------------
-# Experimental, opt-in only: CrossOver 24 + Apple D3DMetal. Its menu felt laggy in testing, so it isn't offered by default.
-METAL=${RECLAIMER_METAL:-no}
-if [ "$METAL" = yes ]; then
-  note "D3DMetal is Apple software under Apple's license: https://developer.apple.com/games/game-porting-toolkit/"
-  bold "Metal version"
-  FW="$BASE/wine-metal/Wine Metal.app/Contents/Frameworks"
-  if [ ! -x "$FW/wswine.bundle/bin/wine" ]; then
-    rm -rf "$BASE/wine-metal"; mkdir -p "$BASE/wine-metal"
-    tar -xf "$(fetch "$CX_TEMPLATE_PKG")" -C "$BASE/wine-metal"
-    mv "$BASE/wine-metal/Template-1.0.17.app" "$BASE/wine-metal/Wine Metal.app"
-    tar -xf "$(fetch "$CX_ENGINE_PKG")" -C "$FW"
-  fi
-  [ -f "$FW/renderer/d3dmetal/external/libd3dshared.dylib" ] || die "D3DMetal is missing from the Metal wrapper."
-  if [ ! -f "$BASE/prefix-metal/system.reg" ]; then
-    export DYLD_FALLBACK_LIBRARY_PATH="$FW:$FW/GStreamer.framework/Libraries:/usr/lib"
-    WINEPREFIX="$BASE/prefix-metal" WINEDEBUG=-all "$FW/wswine.bundle/bin/wine" wineboot -i >/dev/null 2>&1 || true
-    WINEPREFIX="$BASE/prefix-metal" WINEDEBUG=-all "$FW/wswine.bundle/bin/wineserver" -w
-    unset DYLD_FALLBACK_LIBRARY_PATH
-  fi
-  unlink_documents "$BASE/prefix-metal"
-  # share the game files and Workshop mods with the Wine version
-  mkdir -p "$BASE/prefix-metal/drive_c/Program Files (x86)"
-  [ -e "$BASE/prefix-metal/$STEAM_REL" ] || ln -s "$BASE/prefix-wine/$STEAM_REL" "$BASE/prefix-metal/$STEAM_REL"
-  note "ok"
-fi
-
 bold "Tuned graphics settings"
 /usr/bin/python3 -I "$BASE/game/presets.py" wine
-[ "$METAL" = yes ] && /usr/bin/python3 -I "$BASE/game/presets.py" metal
 
 bold "Apps"
 mkdir -p "${RECLAIMER_APPS_DIR:-$HOME/Applications}"
 script_file scripts/make_app.sh "$BASE/tools/make_app.sh"
 /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer" wine
-[ "$METAL" = yes ] && /bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer Metal" metal
 rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack" "$CACHE/MoltenVK" "$CACHE/spinfix-d3d11.dll"
 
 bold "Done"
 note "Open \"Project Reclaimer\" from Spotlight, Launchpad or ~/Applications."
-[ "$METAL" = yes ] && note "\"Project Reclaimer Metal\" is the experimental Apple D3DMetal version."
 note "First launch asks for your Steam account name (for Workshop mods) and builds a Forge cache (~1 min)."
 note "If a Project Reclaimer update ever stops you joining servers, re-run this installer, then restart the game."
 note "You can delete $CACHE to free ~1 GB."

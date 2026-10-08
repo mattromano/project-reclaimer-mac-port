@@ -15,6 +15,7 @@ fi
 
 pkill -f 'project-reclaimer-v[0-9.]+\.exe' 2>/dev/null || true
 pkill -f 'workshop_helper.py watch' 2>/dev/null || true
+# (the Metal app came from older versions of the installer)
 rm -rf "$APPS/Project Reclaimer.app" "$APPS/Project Reclaimer Metal.app" "$BASE"
 
 if [ -z "${RECLAIMER_KEEP_NETWORK:-}" ] && [ -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then

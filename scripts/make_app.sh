@@ -1,5 +1,5 @@
 #!/bin/bash
-# make_app.sh "<App Name>" wine|metal: build ~/Applications/<App Name>.app that launches that variant
+# make_app.sh "<App Name>" wine: build ~/Applications/<App Name>.app that launches the game
 set -euo pipefail
 NAME=$1 GFX=$2
 BASE=${RECLAIMER_HOME:-$HOME/Games/ProjectReclaimer}

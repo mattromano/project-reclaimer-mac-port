@@ -31,11 +31,9 @@ ACCOUNT_FILE = BASE / "steam-account"
 DEPOT = BASE / "tools" / "DepotDownloader"
 WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" / "steamapps" / "workshop"
             / "content" / "976730")
-# each variant's Reclaimer profile lives in its own prefix (the installer unlinks Documents from ~/Documents)
+# Reclaimer's profile lives in the prefix (the installer unlinks Documents from ~/Documents)
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
-            for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")] + [
-            d / "Documents" / "My Games" / "Project Reclaimer"
-            for d in (BASE / "prefix-metal" / "drive_c" / "users").glob("*")]
+            for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
 GAME_PROCESS = r"project-reclaimer-v[0-9.]+\.exe game-client"
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")

@@ -175,9 +175,17 @@ def game_running():
 
 def watch():
     """Rescan the client log every 2 s until the game exits; fetch each failed Workshop mod once."""
+    others = subprocess.run(["pgrep", "-f", "workshop_helper.py watch"], capture_output=True, text=True).stdout.split()
+    if [p for p in others if p != str(os.getpid())]:
+        log("another helper is already watching; exiting")
+        return
     log("watching " + str(LOG))
-    seen, pos, started = set(), 0, time.time()
-    while game_running() or time.time() - started < 120:
+    seen, pos, last_seen = set(), 0, time.time()
+    # keep going until the game has been gone for 60 s straight: one missed check (or Reclaimer restarting itself
+    # after an update) used to stop the helper while the game was still running
+    while time.time() - last_seen < 60:
+        if game_running():
+            last_seen = time.time()
         try:
             size = LOG.stat().st_size
             if size < pos:  # log was truncated by a new game launch

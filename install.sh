@@ -82,7 +82,9 @@ note "Installs into: $BASE"
 MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 [ "$MACOS_MAJOR" -ge 14 ] || die "This needs macOS 14 Sonoma or newer."
 FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
-[ "$FREE_GB" -ge 45 ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || [ -n "$UPDATE" ] || die "Need about 45 GB free disk space (have ${FREE_GB} GB)."
+# (only a first install downloads the ~35 GB of game files; re-running it over an existing install needs ~1 GB)
+[ "$FREE_GB" -ge 45 ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || [ -n "$UPDATE" ] ||
+  [ -f "$BASE/prefix-wine/$MCC_REL/halo3/halo3.dll" ] || die "Need about 45 GB free disk space (have ${FREE_GB} GB)."
 mkdir -p "$BASE"/{game,tools,logs} "$CACHE"
 
 if ! /usr/bin/pgrep -q oahd; then
@@ -122,7 +124,7 @@ note "ok"
 
 bold "Project Reclaimer (latest release, checksum-verified)"
 # updater.py installs it as its own file and removes older ones; the game's own updater is off (see run.sh)
-RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/updater.py" game |
+RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/updater.py" game 2>>"$BASE/logs/launcher.log" |
   awk '!/^progress: / {sub(/^(status|done|error|offline): /, ""); print "    " $0; fflush()}' ||
   die "Could not install Project Reclaimer. Check your internet connection and run the installer again."
 ls "$BASE"/game/project-reclaimer-v*.exe >/dev/null 2>&1 ||

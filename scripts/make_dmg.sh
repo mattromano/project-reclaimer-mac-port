@@ -41,6 +41,9 @@ Steam, the Steam app on your phone, ~45 GB free disk space, and your Mac passwor
 3. When it says Done, open "Project Reclaimer" from Spotlight or Launchpad. Its window updates everything,
    shows a QR code to scan with the Steam app if mods need you to sign in, and then you press Play.
 
+Had the first version (it asked for your Steam account name)? Quit the game and do step 1 once more: it keeps
+your game files, mods and settings. Then open Project Reclaimer and scan the QR code if the window shows one.
+
 You only need this disk image once: the app keeps itself and the game up to date each time you open it.
 If anything fails, run the installer again: it picks up where it stopped.
 More help: https://github.com/mattromano/project-reclaimer-mac-port

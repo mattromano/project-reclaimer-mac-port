@@ -47,6 +47,21 @@ by Apple, so the first time macOS refuses it: click Done, then System Settings â
 (`scripts/make_dmg.sh` builds the disk image; `scripts/make_launcher.sh` builds the launcher window from
 `launcher/`.)
 
+## Upgrading from 1.0
+
+Had the first version (the one that asked for your Steam account name)? Move to the new one once, and from then on
+it updates itself:
+
+1. Quit the game if it's running.
+2. Run the installer again: the same Terminal line as above, or the disk image's **Install Project Reclaimer**
+   (the 1.0 disk image works too). It keeps your Halo 3 files, mods and graphics settings, so there's no 35 GB download
+   and no QR code for the game files. It takes a minute or two.
+3. Open **Project Reclaimer**. You now get the new window instead of the game starting straight away. If it shows a
+   QR code, scan it with the Steam app (the old account-name login is gone), then press **Play**.
+
+If you had moved the app out of your home folder's Applications folder (for example into the main Applications
+folder), delete that old copy: the new one is in `~/Applications`, and Spotlight finds it there.
+
 ## Playing
 
 Open **Project Reclaimer** from Spotlight or Launchpad. A small window gets everything ready, then you press **Play**:

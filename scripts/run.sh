@@ -5,6 +5,9 @@
 BASE=${RECLAIMER_HOME:-~/Games/ProjectReclaimer}
 MCC='C:\Program Files (x86)\Steam\steamapps\common\Halo The Master Chief Collection'
 export WINEDEBUG=${WINEDEBUG:--all,err+d3d,err+vulkan,err+mmdevapi,err+coreaudio}
+# The launcher installs Project Reclaimer updates (updater.py) before the game starts. The game's own updater
+# overwrites its exe in place and restarts itself outside the launcher, so its update feed stays off.
+export RECLAIMER_UPDATE_URL=off
 
 # Mesa opengl32.dll beside the exe: Reclaimer's menu needs OpenGL 3.0+, which Wine on macOS only gives core-profile apps
 export GALLIUM_DRIVER=${GALLIUM_DRIVER:-llvmpipe}

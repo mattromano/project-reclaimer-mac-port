@@ -35,36 +35,50 @@ What it does, in order:
    Reclaimer uses (`127.0.0.x`–`127.0.3.x`, `127.3.1.x`; macOS only enables `127.0.0.1` by default).
 5. Puts **Project Reclaimer** in `~/Applications`, so it shows up in Spotlight and Launchpad.
 
+You only run the installer once. After that the app keeps itself, Project Reclaimer and your Workshop mods up to
+date every time you open it.
+
 If anything fails, run the same command again: finished steps are skipped and the Steam download resumes.
 
 **Prefer double-clicking?** Download
 [Project-Reclaimer-Mac-Port.dmg](https://github.com/mattromano/project-reclaimer-mac-port/releases/latest/download/Project-Reclaimer-Mac-Port.dmg),
 open it and double-click **Install Project Reclaimer**: it opens Terminal and runs the same command. It isn't signed
 by Apple, so the first time macOS refuses it: click Done, then System Settings → Privacy & Security → **Open Anyway**.
-(`scripts/make_dmg.sh` builds the disk image.)
+(`scripts/make_dmg.sh` builds the disk image; `scripts/make_launcher.sh` builds the launcher window from
+`launcher/`.)
 
 ## Playing
 
-- Open **Project Reclaimer** from Spotlight or Launchpad. The first launch asks for your Steam account name (used to
-  download Workshop mods) and spends about a minute building a Forge cache.
-- **Workshop mods download themselves.** Without the Steam client, the game downloads mods from the game servers,
-  which cap sharing at ~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper running next
-  to the game fetches the same mods from Steam's CDN instead (~40 MB/s measured: 1.6 GB in 37 s) and posts a
-  notification when each is ready: press **Try Again**, or leave and rejoin if the game was still downloading it
-  from the server. Mods are 1–9 GB each. The helper signs in to Steam with the QR login saved at install; when
-  that expires, a Terminal window shows a new QR code to scan.
-- Change graphics in the game's own Settings. To restore the tuned defaults, re-run the installer.
+Open **Project Reclaimer** from Spotlight or Launchpad. A small window gets everything ready, then you press **Play**:
+
+1. **Updates.** It installs any new version of this Mac port and of Project Reclaimer (each checksum-verified), then
+   carries on. Offline? It skips this and you can still play. The game's own in-game updater is turned off: it
+   replaced the game file in place and restarted the game outside the launcher, which broke things under Wine.
+2. **Steam sign-in, for Workshop mods.** It checks that the saved Steam login still works. If it doesn't, a QR code
+   appears right in the window: open the Steam app on your phone, tap the shield (Steam Guard), then
+   **Scan a QR code**. The window moves on by itself. You can skip this, but mods then download slowly or not at all.
+3. **Play.** While you play, the window lists Workshop mods being downloaded, with progress, and tells you when each
+   is ready (press **Try Again** in the game, or leave and rejoin if the game was still downloading it from the
+   server).
+
+Why mods need Steam: without the Steam client, the game downloads mods from the game servers, which cap sharing at
+~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper next to the game fetches the same
+mods from Steam's CDN instead (~40 MB/s measured: 1.6 GB in 37 s). Mods are 1–9 GB each. To get a mod before
+joining a server, paste its Steam Workshop link into the window.
+
+The first match builds a Forge cache (about a minute). Change graphics in the game's own Settings; updates keep them.
+To put back the tuned defaults, run the install command with `RECLAIMER_RESET_GRAPHICS=1 ` in front of it.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| "Could not join that server" on every server, especially after a Reclaimer update | A new release may use new local addresses. Re-run the installer, then **quit and reopen** the game. |
+| "Could not join that server" on every server, especially after a Reclaimer update | A new release may use new local addresses. Quit the game and open Project Reclaimer again: the update installs the fix (it may ask for your Mac password). |
+| Mods won't download / "Start Steam…" | Look at the Project Reclaimer window: if it shows a QR code, scan it with the Steam app. If it says a mod couldn't download, press Try Again in the game. |
 | Game won't start right after a reboot | The startup task re-adds the network addresses at boot; wait a few seconds after logging in. |
 | Stuck on "Synchronizing players" for minutes | Usually the server (its clock is stuck for everyone). Try another server. |
-| "Steam login expired" notification | Terminal opens with a QR code; scan it with the Steam app. |
 | "Graphics card stopped responding" | A GPU fault in the DirectX → Metal translation, mostly on heavy modded maps. Relaunch; lower Settings → render resolution if it repeats. |
-| Something else | Logs are in `~/Games/ProjectReclaimer/logs/` (`client-wine.log`, `workshop-helper.log`). Each launch overwrites the game log, so copy it before relaunching. |
+| Something else | Logs are in `~/Games/ProjectReclaimer/logs/` (`launcher.log`, `client-wine.log`, `workshop-helper.log`). Each launch overwrites the game log, so copy it before relaunching. |
 
 ## Uninstall
 
@@ -88,7 +102,10 @@ The problems found while porting it, and what the scripts do about each:
 | Halo 3's engine thread polls the clock ~40,000 times a second between frames: one full CPU core under Rosetta, menu and match alike | `spinfix`: a small `d3d11.dll` in front of DXVK that makes halo3.dll's clock polling sleep 1 ms once it reads the clock 8+ times within a millisecond. Menu ~2.4 → ~1.5 cores, match ~1.75 → ~0.9, same 60 fps. Source in `spinfix/`; set `RECLAIMER_SPINFIX_US=0` to turn it off |
 | DXVK rebuilt its swapchain every frame (a 1080p swapchain in a differently sized full-screen window), stalling the GPU each time | Windowed at exactly the render size: ~95 → ~120 fps uncapped |
 | GPU address fault ("graphics card stopped responding") on heavy modded maps | MoltenVK 1.4.2 (device-loss and argument-buffer fixes) instead of Wine's bundled 1.4.0 |
-| No Steam client under Wine (its UI renders black) | DepotDownloader for game files and Workshop mods, using Steam's QR sign-in |
+| No Steam client under Wine (its UI renders black) | DepotDownloader for game files and Workshop mods, using Steam's QR sign-in, shown in the launcher window |
+| Mod downloads never started for some players: the helper asked for an account name and looked up the saved login under exactly that name, so a display name, email or different capitalization failed every time | No name to type: the launcher saves the account name Steam reports at QR sign-in, checks the login before each game, and shows a new QR code when it has expired |
+| Reclaimer's in-game updater replaces its exe in place and restarts the game outside the launcher | `RECLAIMER_UPDATE_URL=off`; the launcher installs each release as its own checksum-verified file before the game starts |
+| Fixes only reached players who re-ran the installer | The launcher compares `VERSION` on GitHub with the installed one and re-runs the installer in update mode (`RECLAIMER_UPDATE=1`) when it is newer |
 | Without Steam, the game downloads Workshop mods from game servers (capped ~2.5 MB/s each) or refuses Workshop-only mods ("Start Steam…") | The Workshop helper fetches them from Steam's CDN instead (~40–110 MB/s measured) |
 | Downloaded mods still showed "Start Steam…": the game only counts a mod as installed when Steam's `appworkshop_976730.acf` lists its current version, and only the Steam client writes that file | The helper writes it for every downloaded mod, with versions from Steam's public Workshop API, and downloads mods again when they update |
 | Multi-GB mod downloads landing in iCloud-synced `~/Documents` | The Wine prefix gets its own Documents folder |

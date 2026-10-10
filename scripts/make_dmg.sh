@@ -38,8 +38,10 @@ Steam, the Steam app on your phone, ~45 GB free disk space, and your Mac passwor
    "Install Project Reclaimer", then confirm.
 2. A Terminal window opens and does the rest. When a QR code appears, open the Steam app on your phone and
    scan it: Halo 3 (~35 GB) downloads from your own Steam account. Type your Mac password when asked.
-3. When it says Done, open "Project Reclaimer" from Spotlight or Launchpad.
+3. When it says Done, open "Project Reclaimer" from Spotlight or Launchpad. Its window updates everything,
+   shows a QR code to scan with the Steam app if mods need you to sign in, and then you press Play.
 
+You only need this disk image once: the app keeps itself and the game up to date each time you open it.
 If anything fails, run the installer again: it picks up where it stopped.
 More help: https://github.com/mattromano/project-reclaimer-mac-port
 TXT

@@ -8,15 +8,24 @@ Resolves the Workshop item ID, downloads it with DepotDownloader (saved Steam lo
 Workshop folder inside the Wine prefix, records it in Steam's Workshop manifest (appworkshop_976730.acf, which the
 game checks and only the Steam client normally writes), and posts a macOS notification. The player then presses
 Try Again, or leaves and rejoins to stop the slower server download. Mods updated on Workshop are downloaded again.
+Each mod's progress goes to logs/mods/<id>.json, which the launcher window shows.
 
-Usage: workshop_helper.py watch | get <workshop id or title>... | setup
+Steam sign-in (used by the launcher before the game starts; prints one result line for it to read):
+  login-check   "ok <account>", "need-login" or "offline": does the saved Steam login still work?
+  login-qr      QR sign-in: "qr-begin", "qr: <row>"..., "qr-end" for each code DepotDownloader shows, then
+                "ok <account>" (saved to steam-account) or "error: <reason>"
+
+Usage: workshop_helper.py watch | get [--in-game] <workshop id or title>... | login-check | login-qr
 """
+import fcntl
 import json
 import os
 import re
 import subprocess
 import queue
+import signal
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -28,6 +37,7 @@ HOME = Path.home()
 BASE = Path(os.environ.get("RECLAIMER_HOME", HOME / "Games" / "ProjectReclaimer"))
 LOG = Path(os.environ.get("RECLAIMER_LOG", BASE / "logs" / "client.log"))
 ACCOUNT_FILE = BASE / "steam-account"
+STATUS_DIR = BASE / "logs" / "mods"
 DEPOT = BASE / "tools" / "DepotDownloader"
 WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" / "steamapps" / "workshop"
             / "content" / "976730")
@@ -35,9 +45,19 @@ WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" /
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
             for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
 GAME_PROCESS = r"project-reclaimer-v[0-9.]+\.exe game-client"
+GAME_GRACE = 60  # seconds the game must be gone before the watching helper stops
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")
 FALLBACK = re.compile(r"^Workshop for (.+?) unavailable: .*using the server")
+PROGRESS = re.compile(r"^\s*(\d+(?:\.\d+)?)% ")
+# a small MCC Workshop item: fetching only its manifest is a quick test that the saved login works
+CHECK_ITEM = "2984061723"
+# DepotDownloader output when the saved login is missing (it asks for a password), expired or rejected
+LOGIN_NEEDED = re.compile(r"Enter account password|Access token was rejected|InvalidPassword|AccountLogonDenied|"
+                          r"TwoFactor|LogOn requires|authentication code", re.I)
+OFFLINE = re.compile(r"Could not connect to Steam|Connection to Steam failed|ServiceUnavailable|TryAnotherCM", re.I)
+QR_START = "Use the Steam Mobile App to sign in with this QR code:"
+QR_SUCCESS = re.compile(r"login with -username (\S+) -remember-password")
 UA = {"User-Agent": "Mozilla/5.0"}
 
 
@@ -56,22 +76,122 @@ def notify(text, title="Project Reclaimer mods"):
 
 
 def account():
-    if ACCOUNT_FILE.exists():
-        name = ACCOUNT_FILE.read_text().strip()
-        if name:
-            return name
-    return setup()
-
-
-def setup():
-    script = ('text returned of (display dialog "Steam account name (the one you sign in with) '
-              'for downloading Workshop mods:" default answer "" with title "Project Reclaimer")')
-    out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    name = out.stdout.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_]{2,64}", name):
+    """Steam account name saved by login-qr (DepotDownloader keeps the login under exactly this name)."""
+    try:
+        return ACCOUNT_FILE.read_text().strip() or None
+    except OSError:
         return None
-    ACCOUNT_FILE.write_text(name + "\n")
-    return name
+
+
+def write_status(wid, **fields):
+    """Merge fields into logs/mods/<wid>.json, the launcher window's view of this mod."""
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATUS_DIR / f"{wid}.json"
+    try:
+        status = json.loads(path.read_text())
+    except (OSError, ValueError):
+        status = {"id": wid}
+    status.update(fields, time=time.time())
+    # a temp file of our own, renamed over: the launcher never reads a half-written file, and the in-game helper
+    # and a launcher download can both write without tripping over each other's temp file
+    with tempfile.NamedTemporaryFile("w", dir=STATUS_DIR, prefix=f".{wid}.", suffix=".tmp", delete=False) as f:
+        f.write(json.dumps(status))
+    os.replace(f.name, path)
+
+
+def stop_with_parent(proc):
+    """Kill proc and exit once the process that started us (the launcher window) is gone, e.g. force-quit."""
+    parent = os.getppid()
+
+    def watch_parent():
+        while os.getppid() == parent:
+            time.sleep(1)
+        proc.kill()
+        os._exit(1)
+    threading.Thread(target=watch_parent, daemon=True).start()
+
+
+def login_check():
+    """Log in with the saved login and stop as soon as Steam accepts it (a few seconds)."""
+    name = account()
+    if not name:
+        return "need-login"
+    cmd = [str(DEPOT), "-app", APP_ID, "-pubfile", CHECK_ITEM, "-manifest-only", "-username", name,
+           "-remember-password", "-dir", str(BASE / "logs" / "login-check")]
+    out = []
+    # stdin closed: with no saved login DepotDownloader would otherwise wait for a password
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    stop_with_parent(p)
+    # DepotDownloader retries Steam's servers for minutes when it can't reach them; the window shouldn't wait that long
+    timer = threading.Timer(float(os.environ.get("RECLAIMER_LOGIN_TIMEOUT", 45)), p.kill)
+    timer.daemon = True
+    timer.start()
+    try:
+        for line in p.stdout:
+            out.append(line)
+            if re.match(r"Got \d+ licenses", line):
+                p.terminate()
+                return f"ok {name}"
+        p.wait(timeout=60)
+    finally:
+        timer.cancel()
+        if p.poll() is None:
+            p.kill()
+    text = "".join(out)
+    if p.returncode == 0:
+        return f"ok {name}"
+    if LOGIN_NEEDED.search(text):
+        return "need-login"
+    # unreachable, timed out, rate limited or crashed: a warning, not a reason to make a working login sign in again
+    sys.stderr.write(text[-4000:])
+    return "offline"
+
+
+def login_qr():
+    """QR sign-in, relaying each QR code DepotDownloader draws; saves the account name Steam reports."""
+    cmd = [str(DEPOT), "-app", APP_ID, "-pubfile", CHECK_ITEM, "-manifest-only", "-qr", "-remember-password",
+           "-dir", str(BASE / "logs" / "login-check")]
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    stop_with_parent(p)
+    qr, name, tail = None, None, []  # qr: rows of the code being relayed, None outside a code
+    try:
+        for raw in p.stdout:
+            line = raw.rstrip("\n")
+            # QRCoder rows: "██" per dark module, two spaces per light one, quiet zone included. The code is square,
+            # so it ends after as many rows as it has modules: DepotDownloader then prints nothing until the scan
+            if line and set(line) <= {"█", " "}:
+                if qr is None:
+                    qr = []
+                    print("qr-begin", flush=True)
+                qr.append(line)
+                print("qr: " + line, flush=True)
+                if len(qr) >= len(qr[0]) // 2:
+                    print("qr-end", flush=True)
+                    qr = None
+                continue
+            if qr is not None:  # a shorter code than expected; end it anyway
+                print("qr-end", flush=True)
+                qr = None
+            if line.strip() and line != QR_START and "QR code has changed" not in line:
+                tail = (tail + [line])[-20:]
+            m = QR_SUCCESS.search(line)
+            if m:
+                name = m.group(1)
+                ACCOUNT_FILE.write_text(name + "\n")
+            if name and re.match(r"Got \d+ licenses", line):
+                p.terminate()
+                break
+        if qr is not None:
+            print("qr-end", flush=True)
+        p.wait(timeout=60)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    if name:
+        return f"ok {name}"
+    reason = tail[-1].strip() if tail else "sign-in did not finish"
+    reason = re.sub(r"^Unhandled exception\. [\w.]+: ", "", reason)
+    return "error: " + reason
 
 
 def workshop_details(ids):
@@ -200,9 +320,28 @@ def write_manifest():
 
 
 def download(wid, label, details, ready_hint="Press Try Again in the game."):
+    """Download one item, with its status ending as ready, failed or login_needed whatever happens."""
+    finished = False
+    try:
+        finished = _download(wid, label, details, ready_hint)
+        return finished
+    finally:
+        try:
+            state = json.loads((STATUS_DIR / f"{wid}.json").read_text()).get("state")
+        except (OSError, ValueError):
+            state = None
+        if state == "downloading":  # an unexpected error: the window must not show it downloading forever
+            write_status(wid, state="failed")
+
+
+def _download(wid, label, details, ready_hint):
+    size = int(details.get("file_size") or 0)
+    write_status(wid, title=label, state="downloading", percent=0.0, bytes_total=size, hint=ready_hint)
     name = account()
     if not name:
-        notify("No Steam account name set; mod download skipped.")
+        # the launcher window shows the QR sign-in when it sees this
+        write_status(wid, state="login_needed")
+        notify(f"Sign in to Steam in the Project Reclaimer window to download {label}.")
         return False
     dest = WORKSHOP / wid
     dest.mkdir(parents=True, exist_ok=True)
@@ -211,27 +350,37 @@ def download(wid, label, details, ready_hint="Press Try Again in the game."):
     cmd = [str(DEPOT), "-app", APP_ID, "-pubfile", wid, "-username", name,
            "-remember-password", "-dir", str(dest)]
     # stdin closed: if the saved login expired DepotDownloader fails instead of waiting for a password
-    p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    stop_on_exit(p)
+    out, last = [], 0.0
+    for line in p.stdout:
+        out = (out + [line])[-200:]
+        m = PROGRESS.match(line)
+        if m and time.time() - last >= 1:  # DepotDownloader prints a line per file; the window polls every second
+            write_status(wid, percent=min(float(m.group(1)), 100.0))
+            last = time.time()
+    p.wait()
+    text = "".join(out)
     if p.returncode == 0 and (dest / "ModInfo.json").exists():
         record_version(wid, details)
         write_manifest()
+        write_status(wid, state="ready", percent=100.0)
         notify(f"{label} is ready. {ready_hint}")
         return True
-    if re.search(r"password|login|logon|auth", p.stdout + p.stderr, re.I):
-        notify("Steam login expired. Opening Terminal to sign in with a QR code.")
-        relogin(name)
+    sys.stderr.write(text[-4000:])
+    if LOGIN_NEEDED.search(text):
+        write_status(wid, state="login_needed")
+        notify(f"Steam sign-in needed: open the Project Reclaimer window to download {label}.")
     else:
+        write_status(wid, state="failed")
         notify(f"Could not download {label}. See ~/Games/ProjectReclaimer/logs/workshop-helper.log")
-    sys.stderr.write(p.stdout[-4000:] + p.stderr[-4000:])
     return False
 
 
-def relogin(name):
-    # no -username: DepotDownloader refuses it with -qr, and saves the QR login under the account's name anyway
-    cmd = (f"{DEPOT} -app {APP_ID} -pubfile 2984061723 -manifest-only -qr -remember-password "
-           f"-dir /tmp/reclaimer-login-check; exit")
-    subprocess.run(["osascript", "-e", f'tell application "Terminal" to do script {json.dumps(cmd)}',
-                    "-e", 'tell application "Terminal" to activate'], check=False)
+def stop_on_exit(proc):
+    """If this helper is stopped (SIGTERM), stop its DepotDownloader too rather than leaving it running."""
+    if threading.current_thread() is threading.main_thread():  # (only the main thread may set signal handlers)
+        signal.signal(signal.SIGTERM, lambda *_: (proc.kill(), sys.exit(1)))
 
 
 def fetch(item, ready_hint="Press Try Again in the game."):
@@ -239,10 +388,20 @@ def fetch(item, ready_hint="Press Try Again in the game."):
     if not wid:
         notify(f"Could not find {item} on Steam Workshop.")
         return False
+    # one download per item: the in-game helper and a pasted link in the window may ask for the same mod
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(STATUS_DIR / f".{wid}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # waits for the other download, then finds the item up to date
+        return _fetch(wid, item, ready_hint)
+
+
+def _fetch(wid, item, ready_hint):
     details = next(iter(workshop_details([wid])), {})
     title = details.get("title") or item
     if up_to_date(wid, details):
         write_manifest()
+        write_status(wid, title=title, state="ready", percent=100.0, bytes_total=int(details.get("file_size") or 0),
+                     hint=ready_hint)
         return True
     if installed_version(wid) is not None:
         log(f"{title} has an update on Steam Workshop")
@@ -257,6 +416,8 @@ def fetcher(jobs):
             fetch(item, hint)
         except Exception as e:  # keep going after network or parse errors
             notify(f"Could not download {item}: {e}")
+        finally:
+            jobs.task_done()
 
 
 def game_running():
@@ -279,7 +440,7 @@ def watch():
     threading.Thread(target=fetcher, args=(jobs,), daemon=True).start()
     # keep going until the game has been gone for 60 s straight: one missed check (or Reclaimer restarting itself
     # after an update) used to stop the helper while the game was still running
-    while time.time() - last_seen < 60:
+    while time.time() - last_seen < GAME_GRACE:
         if game_running():
             last_seen = time.time()
         try:
@@ -305,18 +466,27 @@ def watch():
                 seen.add(m.group(1))
                 log("game is downloading Workshop mod from servers instead: " + m.group(1))
                 jobs.put((m.group(1), "If the game is still downloading it, leave and rejoin to use this copy."))
-        time.sleep(2)
+        time.sleep(min(2, GAME_GRACE))
+    if jobs.unfinished_tasks:
+        log("game exited; finishing mod downloads first")
+    jobs.join()  # a download started in the game finishes, so the mod is ready next time
     log("game exited; helper stopping")
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ("watch", "get", "setup"):
+    if len(argv) < 2 or argv[1] not in ("watch", "get", "login-check", "login-qr"):
         print(__doc__)
         return 2
-    if argv[1] == "setup":
-        return 0 if setup() else 1
+    if argv[1] in ("login-check", "login-qr"):
+        # the launcher stops a sign-in it no longer needs: exit through login_qr's cleanup, which stops DepotDownloader
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+        result = login_check() if argv[1] == "login-check" else login_qr()
+        print(result, flush=True)
+        return 0 if result.startswith("ok ") or result == "need-login" or result == "offline" else 1
     if argv[1] == "get":
-        return 0 if all([fetch(x) for x in argv[2:]]) else 1
+        in_game = "--in-game" in argv
+        hint = "Ready: press Try Again in the game." if in_game else "Downloaded and ready to play."
+        return 0 if all([fetch(x, hint) for x in argv[2:] if x != "--in-game"]) else 1
     watch()
     return 0
 

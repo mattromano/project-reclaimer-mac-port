@@ -7,6 +7,9 @@
 # Options (environment variables):
 #   RECLAIMER_MCC_FROM=<dir>    copy existing MCC game files from <dir> instead of downloading them from Steam
 #   RECLAIMER_CACHE=<dir>       reuse already-downloaded archives from <dir>
+#   RECLAIMER_UPDATE=1          update an existing install without questions (run by the launcher's updater.py):
+#                               admin steps use macOS's password dialog instead of sudo
+#   RECLAIMER_RESET_GRAPHICS=1  put back the tuned graphics settings (otherwise only a fresh install gets them)
 set -euo pipefail
 
 REPO_RAW=${RECLAIMER_REPO_RAW:-https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main}
@@ -23,8 +26,11 @@ DXVK_PKG="dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz|https://github.com/Gce
 MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-macos.tar|f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e"
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
-RECLAIMER_RELEASES=https://github.com/ProjectReclaimer/project-reclaimer-releases/releases/latest/download
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
+LAUNCHER_SHA=1bfa732b343c0eefa6875b23bf1759b78a21b600c551f13d1c1568fa6a9311f3  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
+UPDATE=${RECLAIMER_UPDATE:-}
+# give up on a stalled connection instead of hanging (the launcher waits for this when updating)
+CURL_LIMITS="--connect-timeout 20 --speed-limit 1024 --speed-time 60"
 
 bold() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -34,7 +40,7 @@ fetch() {  # fetch "name|url|sha256" -> path of the verified file in $CACHE
   local name=${1%%|*} rest=${1#*|}; local url=${rest%%|*} sum=${rest##*|} f="$CACHE/${1%%|*}"
   if [ ! -f "$f" ] || [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" != "$sum" ]; then
     note "downloading $name" >&2
-    curl -fL --progress-bar -o "$f.part" "$url" || die "download failed: $url"
+    curl -fL $CURL_LIMITS --progress-bar -o "$f.part" "$url" || die "download failed: $url"
     mv "$f.part" "$f"
   fi
   [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sum" ] || die "checksum mismatch for $name"
@@ -43,8 +49,23 @@ fetch() {  # fetch "name|url|sha256" -> path of the verified file in $CACHE
 
 script_file() {  # copy a file from this repo (local checkout or GitHub) to $2
   local here; here=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
-  if [ -n "$here" ] && [ -f "$here/$1" ]; then cp "$here/$1" "$2"; else curl -fsSL "$REPO_RAW/$1" -o "$2"; fi
+  if [ -n "$here" ] && [ -f "$here/$1" ]; then cp "$here/$1" "$2"; else curl -fsSL $CURL_LIMITS "$REPO_RAW/$1" -o "$2"; fi
 }
+
+as_admin() {  # as_admin "<shell command>": sudo in Terminal; macOS's password dialog when updating from the launcher
+  if [ -n "$UPDATE" ]; then
+    local cmd=${1//\\/\\\\}; cmd=${cmd//\"/\\\"}
+    /usr/bin/osascript -e "do shell script \"$cmd\" with prompt \"Project Reclaimer is updating its network settings.\" with administrator privileges" >/dev/null
+  else
+    sudo /bin/sh -c "$1" </dev/tty
+  fi
+}
+
+installed() {  # installed <name> <version>: true when <name> is already installed at <version>
+  [ "$(cat "$BASE/.installed/$1" 2>/dev/null)" = "$2" ]
+}
+
+mark_installed() { mkdir -p "$BASE/.installed"; printf '%s\n' "$2" > "$BASE/.installed/$1"; }
 
 unlink_documents() {  # give a prefix its own Documents folder instead of Wine's link to ~/Documents
   local d
@@ -61,7 +82,7 @@ note "Installs into: $BASE"
 MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 [ "$MACOS_MAJOR" -ge 14 ] || die "This needs macOS 14 Sonoma or newer."
 FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
-[ "$FREE_GB" -ge 45 ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || die "Need about 45 GB free disk space (have ${FREE_GB} GB)."
+[ "$FREE_GB" -ge 45 ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || [ -n "$UPDATE" ] || die "Need about 45 GB free disk space (have ${FREE_GB} GB)."
 mkdir -p "$BASE"/{game,tools,logs} "$CACHE"
 
 if ! /usr/bin/pgrep -q oahd; then
@@ -87,26 +108,25 @@ fi
 note "ok"
 
 bold "Menu library (Mesa)"
-tar -xf "$(fetch "$MESA_PKG")" -C "$CACHE" x64/opengl32.dll x64/libgallium_wgl.dll
-cp "$CACHE/x64/opengl32.dll" "$CACHE/x64/libgallium_wgl.dll" "$BASE/game/"
+if ! installed mesa "${MESA_PKG%%|*}" || [ ! -f "$BASE/game/opengl32.dll" ]; then
+  tar -xf "$(fetch "$MESA_PKG")" -C "$CACHE" x64/opengl32.dll x64/libgallium_wgl.dll
+  cp "$CACHE/x64/opengl32.dll" "$CACHE/x64/libgallium_wgl.dll" "$BASE/game/"
+  mark_installed mesa "${MESA_PKG%%|*}"
+fi
+note "ok"
+
+bold "Game scripts and Workshop mod helper"
+for f in run.sh launch.sh workshop_helper.py presets.py updater.py; do script_file "scripts/$f" "$BASE/game/$f"; done
+chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py"
 note "ok"
 
 bold "Project Reclaimer (latest release, checksum-verified)"
-curl -fsSL "$RECLAIMER_RELEASES/SHA256SUMS.txt" -o "$CACHE/SHA256SUMS.txt"
-EXE=$(tr -d '\r' < "$CACHE/SHA256SUMS.txt" | awk '{n=$2; sub(/^\*/,"",n); if (n ~ /^project-reclaimer-v[0-9.]+\.exe$/) {print n; exit}}')
-EXE_SUM=$(tr -d '\r' < "$CACHE/SHA256SUMS.txt" | awk -v e="$EXE" '{n=$2; sub(/^\*/,"",n); if (n == e) print $1}')
-[ -n "$EXE" ] || die "Could not find the Project Reclaimer download."
-if [ ! -f "$BASE/game/$EXE" ]; then
-  curl -fL --progress-bar "$RECLAIMER_RELEASES/$EXE" -o "$CACHE/$EXE"
-  [ "$(shasum -a 256 "$CACHE/$EXE" | cut -d' ' -f1)" = "$EXE_SUM" ] || die "Project Reclaimer checksum mismatch."
-  cp "$CACHE/$EXE" "$BASE/game/"
-fi
-note "$EXE"
-
-bold "Launcher and Workshop mod helper"
-for f in run.sh workshop_helper.py presets.py; do script_file "scripts/$f" "$BASE/game/$f"; done
-chmod +x "$BASE/game/run.sh" "$BASE/game/workshop_helper.py"
-note "ok"
+# updater.py installs it as its own file and removes older ones; the game's own updater is off (see run.sh)
+RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/updater.py" game |
+  awk '!/^progress: / {sub(/^(status|done|error|offline): /, ""); print "    " $0; fflush()}' ||
+  die "Could not install Project Reclaimer. Check your internet connection and run the installer again."
+ls "$BASE"/game/project-reclaimer-v*.exe >/dev/null 2>&1 ||
+  die "Could not download Project Reclaimer. Check your internet connection and run the installer again."
 
 bold "Windows environment for the Wine version"
 WINE_BIN="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin"
@@ -119,9 +139,12 @@ unlink_documents "$BASE/prefix-wine"
 # renamed d3d11_dxvk.dll behind spinfix's d3d11.dll, which forwards to it and stops Halo 3's engine thread from
 # spinning a full CPU core on the clock between frames (see spinfix/spinfix.c)
 SYS32="$BASE/prefix-wine/drive_c/windows/system32"
-tar -xzf "$(fetch "$DXVK_PKG")" -C "$CACHE"
-cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/d3d10core.dll" "$SYS32/"
-cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/d3d11.dll" "$SYS32/d3d11_dxvk.dll"
+if ! installed dxvk "${DXVK_PKG%%|*}" || [ ! -f "$SYS32/d3d11_dxvk.dll" ]; then
+  tar -xzf "$(fetch "$DXVK_PKG")" -C "$CACHE"
+  cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/d3d10core.dll" "$SYS32/"
+  cp "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack/x64/d3d11.dll" "$SYS32/d3d11_dxvk.dll"
+  mark_installed dxvk "${DXVK_PKG%%|*}"
+fi
 script_file spinfix/d3d11.dll "$CACHE/spinfix-d3d11.dll"
 [ "$(shasum -a 256 "$CACHE/spinfix-d3d11.dll" | cut -d' ' -f1)" = "$SPINFIX_SHA" ] || die "checksum mismatch for spinfix/d3d11.dll"
 cp "$CACHE/spinfix-d3d11.dll" "$SYS32/d3d11.dll"
@@ -137,6 +160,8 @@ bold "Halo 3 game files (your Steam copy of Halo: The Master Chief Collection)"
 MCC_DIR="$BASE/prefix-wine/$MCC_REL"
 if [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ]; then
   note "already installed"
+elif [ -n "$UPDATE" ]; then
+  die "Halo 3's game files are missing. Open the Project Reclaimer disk image and run the installer again."
 elif [ -n "${RECLAIMER_MCC_FROM:-}" ]; then
   mkdir -p "$(dirname "$MCC_DIR")"; cp -cR "$RECLAIMER_MCC_FROM" "$MCC_DIR" 2>/dev/null || cp -R "$RECLAIMER_MCC_FROM" "$MCC_DIR"
   note "copied from $RECLAIMER_MCC_FROM"
@@ -163,27 +188,43 @@ LB_DIR="/Library/Application Support/ProjectReclaimer"
 # (re)install when missing or when a Reclaimer release needed new address ranges
 if ! cmp -s "$T/reclaimer-loopback.sh" "$LB_DIR/reclaimer-loopback.sh" ||
    [ ! -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
-  sudo /bin/sh -c "mkdir -p '$LB_DIR' &&
+  as_admin "mkdir -p '$LB_DIR' &&
     install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '$LB_DIR/reclaimer-loopback.sh' &&
     install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
     { launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null; true; } &&
-    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" </dev/tty ||
+    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" ||
     die "Could not install the network startup task."
 fi
 rm -rf "$T"
 note "ok"
 
-bold "Tuned graphics settings"
-/usr/bin/python3 -I "$BASE/game/presets.py" wine
+# only a fresh install (or RECLAIMER_RESET_GRAPHICS=1) gets the tuned settings; otherwise the player's own stay
+if [ -n "${RECLAIMER_RESET_GRAPHICS:-}" ] ||
+   ! ls "$BASE"/prefix-wine/drive_c/users/*/Documents/"My Games/Project Reclaimer/settings.json" >/dev/null 2>&1; then
+  bold "Tuned graphics settings"
+  /usr/bin/python3 -I "$BASE/game/presets.py" wine
+fi
 
-bold "Apps"
+bold "Launcher app"
+script_file launcher/ProjectReclaimer "$CACHE/launcher"
+[ "$(shasum -a 256 "$CACHE/launcher" | cut -d' ' -f1)" = "$LAUNCHER_SHA" ] || die "checksum mismatch for the launcher"
+# replace, don't overwrite in place: the old launcher may be running (and macOS caches a binary's signature per file)
+rm -f "$BASE/tools/ProjectReclaimer"
+mv "$CACHE/launcher" "$BASE/tools/ProjectReclaimer"
+chmod +x "$BASE/tools/ProjectReclaimer"
 mkdir -p "${RECLAIMER_APPS_DIR:-$HOME/Applications}"
 script_file scripts/make_app.sh "$BASE/tools/make_app.sh"
-/bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer" wine
+# the version the launcher's updater asked for (it checks this afterwards), else this copy's own
+if [ -n "${RECLAIMER_EXPECT_VERSION:-}" ]; then echo "$RECLAIMER_EXPECT_VERSION" > "$CACHE/VERSION"
+else script_file VERSION "$CACHE/VERSION"; fi
+/bin/bash "$BASE/tools/make_app.sh" "Project Reclaimer" "$(cat "$CACHE/VERSION")"
 rm -rf "$CACHE/x64" "$CACHE/dxvk-macOS-async-v1.10.3-20230507-repack" "$CACHE/MoltenVK" "$CACHE/spinfix-d3d11.dll"
+# last: the launcher compares this with GitHub's VERSION, so a failed update is tried again next launch
+mv "$CACHE/VERSION" "$BASE/version"
+[ -n "$UPDATE" ] && { bold "Updated to $(cat "$BASE/version")"; exit 0; }
 
 bold "Done"
 note "Open \"Project Reclaimer\" from Spotlight, Launchpad or ~/Applications."
-note "First launch asks for your Steam account name (for Workshop mods) and builds a Forge cache (~1 min)."
-note "If a Project Reclaimer update ever stops you joining servers, re-run this installer, then restart the game."
+note "It keeps itself and the game up to date, and signs you in to Steam for Workshop mods with a QR code."
+note "The first match builds a Forge cache (~1 min)."
 note "You can delete $CACHE to free ~1 GB."

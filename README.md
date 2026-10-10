@@ -57,9 +57,13 @@ Open **Project Reclaimer** from Spotlight or Launchpad. A small window gets ever
 2. **Steam sign-in, for Workshop mods.** It checks that the saved Steam login still works. If it doesn't, a QR code
    appears right in the window: open the Steam app on your phone, tap the shield (Steam Guard), then
    **Scan a QR code**. The window moves on by itself. You can skip this, but mods then download slowly or not at all.
-3. **Play.** While you play, the window lists Workshop mods being downloaded, with progress, and tells you when each
-   is ready (press **Try Again** in the game, or leave and rejoin if the game was still downloading it from the
-   server).
+3. **Play.** While you play, the window lists Workshop mods being downloaded, with progress, and a notification
+   tells you when each is ready: press **Try Again** in the game, or leave and rejoin if the game was still
+   downloading it from the server. The game itself keeps saying "not downloaded… Start Steam" for these mods; the
+   window explains that this is expected.
+
+The window's **Problems joining a server?** section explains the game messages players hit most (a server on an
+older version, a server with an outdated mod, and so on) and has a **Show logs** button for sending you the logs.
 
 Why mods need Steam: without the Steam client, the game downloads mods from the game servers, which cap sharing at
 ~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper next to the game fetches the same

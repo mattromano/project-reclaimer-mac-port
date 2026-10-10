@@ -31,7 +31,7 @@ RELEASES = os.environ.get("RECLAIMER_RELEASES",
 GAME = BASE / "game"
 CLIENT_EXE = re.compile(r"^project-reclaimer-v[0-9.]+\.exe$")
 # the running game itself (as workshop_helper.py matches it), not any command that merely names the file
-GAME_PROCESS = r"project-reclaimer-v[0-9.]+\.exe game-client"
+GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
 UA = {"User-Agent": "project-reclaimer-mac-port"}
 
 
@@ -64,7 +64,7 @@ def sha256(path):
 
 
 def game_running():
-    return subprocess.run(["pgrep", "-f", GAME_PROCESS], capture_output=True).returncode == 0
+    return subprocess.run(["pgrep", "-a", "-f", GAME_PROCESS], capture_output=True).returncode == 0  # (-a: see helper)
 
 
 # ---------------------------------------------------------------------------------------------------------------

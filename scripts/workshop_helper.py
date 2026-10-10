@@ -44,7 +44,7 @@ WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" /
 # Reclaimer's profile lives in the prefix (the installer unlinks Documents from ~/Documents)
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
             for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
-GAME_PROCESS = r"project-reclaimer-v[0-9.]+\.exe game-client"
+GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
 GAME_GRACE = 60  # seconds the game must be gone before the watching helper stops
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")
@@ -71,6 +71,8 @@ def applescript_str(text):
 
 def notify(text, title="Project Reclaimer mods"):
     log(text)
+    if os.environ.get("RECLAIMER_LAUNCHER_NOTIFIES"):  # the launcher window posts its own, from the mod status files
+        return
     script = f"display notification {applescript_str(text)} with title {applescript_str(title)}"
     subprocess.run(["osascript", "-e", script], check=False)
 
@@ -421,13 +423,19 @@ def fetcher(jobs):
 
 
 def game_running():
-    return subprocess.run(["pgrep", "-f", GAME_PROCESS], capture_output=True).returncode == 0
+    # -a: launch.sh starts this helper and then becomes the game, so the game is our parent process, and pgrep
+    # leaves out the caller's ancestors unless asked to include them
+    return subprocess.run(["pgrep", "-a", "-f", GAME_PROCESS], capture_output=True).returncode == 0
 
 
 def watch():
     """Rescan the client log every 2 s until the game exits; fetch each failed Workshop mod once."""
-    others = subprocess.run(["pgrep", "-f", "workshop_helper.py watch"], capture_output=True, text=True).stdout.split()
-    if [p for p in others if p != str(os.getpid())]:
+    # a lock, not a process search: any command line that merely mentions this helper would match a search
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    lock = open(STATUS_DIR / ".watch.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
         log("another helper is already watching; exiting")
         return
     log("watching " + str(LOG))
@@ -485,7 +493,7 @@ def main(argv):
         return 0 if result.startswith("ok ") or result == "need-login" or result == "offline" else 1
     if argv[1] == "get":
         in_game = "--in-game" in argv
-        hint = "Ready: press Try Again in the game." if in_game else "Downloaded and ready to play."
+        hint = "Press Try Again in the game." if in_game else "It's there when you join a server that uses it."
         return 0 if all([fetch(x, hint) for x in argv[2:] if x != "--in-game"]) else 1
     watch()
     return 0

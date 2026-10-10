@@ -89,7 +89,7 @@ struct ModStatus: Decodable, Identifiable, Equatable {
                 return "\(gigabytes(Double(total) * fraction)) of \(gigabytes(Double(total)))"
             }
             return "Downloading from Steam Workshop…"
-        case "ready": return hint ?? "Ready"
+        case "ready": return hint.map { "Ready. \($0)" } ?? "Ready"
         case "login_needed": return "Waiting for Steam sign-in"
         default: return "Couldn't download. It will be tried again next time the game asks for it."
         }
@@ -114,4 +114,22 @@ func workshopID(from input: String) -> String? {
     if !s.isEmpty, s.allSatisfy(\.isNumber) { return s }
     guard let r = s.range(of: #"[?&]id=(\d+)"#, options: .regularExpression) else { return nil }
     return String(s[r].drop(while: { !$0.isNumber }))
+}
+
+/// Notifications for mods that started downloading or became ready since the last look. The game itself keeps
+/// saying "not downloaded: Start Steam…" for these, so the notification says what to do instead.
+func modNotifications(before: [ModStatus], after: [ModStatus]) -> [(title: String, body: String)] {
+    let old = Dictionary(before.map { ($0.id, $0.state) }, uniquingKeysWith: { a, _ in a })
+    return after.compactMap { m in
+        guard old[m.id] != m.state else { return nil }
+        switch m.state {
+        case "downloading":
+            return ("Getting \(m.name) for you",
+                    "Ignore the game's “Start Steam” message. You'll get another notification when it's ready.")
+        case "ready" where old[m.id] != nil:  // (not mods that were already there when the window opened)
+            return ("\(m.name) is ready", "Press Try Again in the game, or leave and rejoin the server.")
+        default:
+            return nil
+        }
+    }
 }

@@ -36,7 +36,8 @@ class HelperTest(unittest.TestCase):
         os.chmod(self.home / "tools" / "DepotDownloader", 0o755)
         self.spec = self.home / "fake.json"
         self.args_log = self.home / "args.log"
-        self.env = dict(os.environ, RECLAIMER_HOME=str(self.home), FAKE_DEPOT=str(self.spec))
+        self.env = dict(os.environ, RECLAIMER_HOME=str(self.home), FAKE_DEPOT=str(self.spec),
+                        RECLAIMER_GAME_PROCESS=r"project-reclaimer-v9\.9\.99\.exe game-client")
 
     def tearDown(self):
         shutil.rmtree(self.home)
@@ -300,6 +301,46 @@ class HelperTest(unittest.TestCase):
                 mock.patch.object(h, "workshop_details", return_value=[self.details()]):
             h.watch()
         self.assertEqual(self.status(h)["state"], "ready")
+
+    def test_game_counts_as_running_when_it_is_the_helpers_parent(self):
+        # launch.sh starts the helper, then exec's into the game: the game is the helper's parent process, and
+        # macOS pgrep skips a caller's ancestors unless told otherwise, so the helper stopped mid-game after 60 s
+        game = subprocess.run([sys.executable, "-c", (
+            "import subprocess, sys\n"
+            "child = ('import importlib.util; s = importlib.util.spec_from_file_location(\"h\", sys.argv[1]); '\n"
+            "         'h = importlib.util.module_from_spec(s); s.loader.exec_module(h); '\n"
+            "         'print(h.game_running())')\n"
+            "print(subprocess.run([sys.executable, '-I', '-c', 'import sys; ' + child, sys.argv[1]],\n"
+            "                     capture_output=True, text=True).stdout.strip())\n"),
+            # (a version no real game has, so a game running on this Mac can't make the test pass)
+            str(HELPER), "project-reclaimer-v9.9.99.exe game-client"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(game.stdout.strip(), "True", game.stderr)
+
+    def test_launcher_posts_the_notifications_when_it_is_running(self):
+        # the launcher's own notifications say "Project Reclaimer"; the helper's osascript ones say "Script Editor"
+        self.env["RECLAIMER_LAUNCHER_NOTIFIES"] = "1"
+        h = self.load()
+        with mock.patch.object(h.subprocess, "run") as run:
+            h.notify("Warlock is ready.")
+        self.assertFalse(run.called)
+
+    def test_only_one_watching_helper_and_nothing_else_fools_it(self):
+        # a process that merely mentions the helper (e.g. a shell command) must not count as a running helper
+        bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "workshop_helper.py watch"])
+        log = self.home / "logs" / "client.log"
+        log.write_text("")
+        env = dict(self.env, RECLAIMER_LOG=str(log))
+        try:
+            first = subprocess.Popen([sys.executable, "-I", str(HELPER), "watch"], env=env,
+                                     stdout=subprocess.PIPE, text=True)
+            self.assertRegex(first.stdout.readline(), r"\d\d:\d\d:\d\d watching ")  # (not "already watching")
+            second = subprocess.run([sys.executable, "-I", str(HELPER), "watch"], env=env, capture_output=True,
+                                    text=True, timeout=20)
+            self.assertIn("already watching", second.stdout)
+        finally:
+            bystander.kill()
+            first.kill()
+            first.wait()
 
     def test_no_setup_command(self):
         rc, out = self.run_helper("setup")

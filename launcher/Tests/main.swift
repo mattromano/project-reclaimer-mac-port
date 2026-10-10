@@ -70,13 +70,23 @@ write("5.json", "not json")
 let mods = ModStatus.load(directory: dir, since: Date(timeIntervalSinceNow: -3600))
 check(mods.map(\.id) == ["1", "2"], "recent mods only, newest first: \(mods.map(\.id))")
 check(mods.first?.detail == "1.1 GB of 1.6 GB", "progress detail: \(mods.first?.detail ?? "-")")
-check(mods.last?.detail == "Press Try Again in the game.", "ready detail")
+check(mods.last?.detail == "Ready. Press Try Again in the game.", "ready detail")
 check(ModStatus(id: "9", state: "downloading", percent: 12, time: 0).detail == "Downloading from Steam Workshop…",
       "no size known (Steam reports 0 for most MCC mods)")
 check(ModStatus.load(directory: dir.appendingPathComponent("missing"), since: .distantPast).isEmpty, "missing dir")
 try? FileManager.default.removeItem(at: dir)
 
 check(gigabytes(8.9e9) == "8.9 GB" && gigabytes(250e6) == "250 MB", "sizes")
+
+// notifications: one when a download starts, one when it's ready; nothing for unchanged or pre-existing mods
+let dl = ModStatus(id: "7", title: "Hugegrass", state: "downloading", percent: 10, time: 1)
+var ready = dl; ready.state = "ready"
+let old = ModStatus(id: "8", title: "Lockout", state: "ready", time: 1)
+check(modNotifications(before: [], after: [dl]).map(\.title) == ["Getting Hugegrass for you"], "download starts")
+check(modNotifications(before: [dl], after: [dl]).isEmpty, "no repeat while downloading")
+check(modNotifications(before: [dl], after: [ready]).map(\.title) == ["Hugegrass is ready"], "ready")
+check(modNotifications(before: [], after: [old]).isEmpty, "already-ready mod at startup: no notification")
+check(modNotifications(before: [ready], after: [ready]).isEmpty, "no repeat when ready")
 
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

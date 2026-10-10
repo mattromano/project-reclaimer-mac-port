@@ -5,6 +5,7 @@
 // Built by scripts/make_launcher.sh. `ProjectReclaimer --render-states <dir>` writes a PNG of each screen state.
 import AppKit
 import SwiftUI
+import UserNotifications
 
 let home: URL = {
     if let h = ProcessInfo.processInfo.environment["RECLAIMER_HOME"], !h.isEmpty { return URL(fileURLWithPath: h) }
@@ -30,6 +31,7 @@ final class LineProcess {
         var env = ProcessInfo.processInfo.environment
         env["RECLAIMER_HOME"] = home.path
         if Bundle.main.bundlePath.hasSuffix(".app") { env["RECLAIMER_APP_PATH"] = Bundle.main.bundlePath }
+        env["RECLAIMER_LAUNCHER_NOTIFIES"] = "1"  // the helper leaves notifications to this window
         process.environment = env
         process.standardInput = FileHandle.nullDevice
         let out = Pipe()
@@ -86,7 +88,7 @@ func processRunning(_ pattern: String, _ done: @escaping @MainActor (Bool) -> Vo
     DispatchQueue.global().async {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-f", pattern]
+        p.arguments = ["-a", "-f", pattern]  // -a: pgrep otherwise skips the caller's ancestors
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         var found = false
@@ -114,6 +116,8 @@ final class Launcher: ObservableObject {
         didSet {
             let summary = mods.map { "\($0.name)=\($0.state)" }
             if summary != oldValue.map({ "\($0.name)=\($0.state)" }) { log("mods: \(summary)") }
+            // while playing the window is behind the game: say it with a notification
+            if playing { for n in modNotifications(before: oldValue, after: mods) { notify(n.title, n.body) } }
         }
     }
     @Published var playing = false { didSet { if playing != oldValue { log("playing: \(playing)") } } }
@@ -121,6 +125,7 @@ final class Launcher: ObservableObject {
     @Published var steamSlow = false  // the Steam check is taking long: offer Skip
     @Published var link = ""
     @Published var linkError: String?
+    @Published var helpOpen = false
 
     private let started = Date()
     private var running: [LineProcess] = []
@@ -149,6 +154,31 @@ final class Launcher: ObservableObject {
         let stamp = ISO8601DateFormatter().string(from: Date())
         h.write(Data("\(stamp) launcher \(text)\n".utf8))
         try? h.close()
+    }
+
+    private var notificationsAllowed = false
+
+    private func notify(_ title: String, _ body: String) {
+        guard logging else { return }
+        log("notification: \(title)")
+        guard notificationsAllowed else {
+            // macOS only lets apps signed by a registered developer post their own notifications; AppleScript's
+            // (shown as Script Editor) work for everyone
+            func quoted(_ s: String) -> String {
+                "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+            }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", "display notification \(quoted(body)) with title \(quoted(title)) sound name \"Glass\""]
+            try? p.run()
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content,
+                                                                     trigger: nil))
     }
 
     func start() {
@@ -304,6 +334,16 @@ final class Launcher: ObservableObject {
 
     // 4. play
     func play() {
+        // asked once, on the first Play: mod downloads are announced with notifications while the game is in front
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            let why = error.map { " (\($0.localizedDescription))" } ?? ""
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.notificationsAllowed = granted
+                    self.log("notifications allowed: \(granted)\(why)")
+                }
+            }
+        }
         gameError = nil
         playing = true
         playedAt = Date()
@@ -521,6 +561,55 @@ struct PlayButtonStyle: ButtonStyle {
     }
 }
 
+/// The game's own messages a player is most likely to hit, in plain words, with what to do about each.
+struct HelpPanel: View {
+    @Binding var open: Bool
+    private let items: [(game: String, help: String)] = [
+        ("Mod not downloaded… Start Steam and sign in",
+         "Expected on a Mac: the game can't use Steam itself, so this window downloads the mod instead. Wait until it says Ready under Mods, then press Try Again (or leave and rejoin)."),
+        ("The server runs an older version of Project Reclaimer",
+         "The server hasn't updated yet; you have the newest version. Pick another server. In the server browser's filters, turn on Hide servers running another version."),
+        ("Steam Workshop's version of a mod differs from the server's",
+         "The server uses an older copy of a mod than Steam has. Only the server's owner can fix it by updating the mod. Pick another server."),
+        ("Could not join that server (every server)",
+         "Quit the game and open Project Reclaimer again: it installs any fix it needs (it may ask for your Mac password)."),
+        ("Stuck on Synchronizing players",
+         "Usually the server's fault. Leave and try another server."),
+        ("Graphics card stopped responding",
+         "Start the game again. If it keeps happening, lower Settings > Render resolution in the game."),
+    ]
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $open) {
+            ScrollView {  // (keeps the window shorter than a laptop screen when mods are listed too)
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(items, id: \.game) { item in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("“\(item.game)”").font(.callout.weight(.semibold))
+                        Text(item.help).font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: 6) {
+                    Text("Something else? Send the logs to whoever set this up for you:")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Show logs") { NSWorkspace.shared.open(home.appendingPathComponent("logs")) }
+                        .buttonStyle(.link).font(.caption)
+                }
+            }
+            .padding(.top, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 300)
+        } label: {
+            Label("Problems joining a server?", systemImage: "questionmark.circle").font(.callout.weight(.medium))
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation { open.toggle() } }
+        }
+        .tint(accent)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var m: Launcher
 
@@ -545,6 +634,19 @@ struct ContentView: View {
             .padding(16)
             .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
 
+            if m.playing {
+                Label {
+                    // (one literal: SwiftUI only applies the **bold** markup to a string literal)
+                    Text("If the game says a mod is **not downloaded** or asks you to **Start Steam**, that's expected: it's downloading here. When it says **Ready** below, press **Try Again** in the game.")
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } icon: {
+                    Image(systemName: "info.circle.fill").foregroundStyle(accent)
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(accent.opacity(0.12)))
+            }
+
             if !m.mods.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Mods").font(.headline)
@@ -564,6 +666,8 @@ struct ContentView: View {
                 }
                 if let e = m.linkError { Text(e).font(.caption).foregroundStyle(.red) }
             }
+
+            HelpPanel(open: $m.helpOpen)
 
             if let e = m.gameError {
                 Label(e, systemImage: "exclamationmark.triangle.fill")
@@ -669,7 +773,7 @@ func renderStates(to dir: URL) {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123"); $0.playing = true
             $0.mods = [
                 ModStatus(id: "1", title: "Warlock", state: "downloading", percent: 68.7, bytes_total: 1_600_000_000, time: now),
-                ModStatus(id: "2", title: "Lockout", state: "ready", percent: 100, hint: "Ready: press Try Again in the game.", time: now - 1),
+                ModStatus(id: "2", title: "Lockout", state: "ready", percent: 100, hint: "Press Try Again in the game.", time: now - 1),
                 ModStatus(id: "3", title: "Ultimate Forge 2.0", state: "login_needed", time: now - 2),
                 ModStatus(id: "4", title: "Sanctuary", state: "failed", time: now - 3),
             ]
@@ -681,6 +785,10 @@ func renderStates(to dir: URL) {
         }),
         ("10-steam-slow", {
             $0.update = .done("Up to date"); $0.steam = .working("Checking your Steam sign-in…"); $0.steamSlow = true
+        }),
+        ("11-help", {
+            $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123"); $0.playing = true
+            $0.helpOpen = true
         }),
         ("8-bad-link", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")

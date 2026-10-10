@@ -55,8 +55,10 @@ class UpdaterTest(unittest.TestCase):
         (self.rel / "SHA256SUMS.txt").write_text(
             f"{sha(b'ded')}  project-reclaimer-dedicated-v0.9.12.exe\r\n"
             f"{sha(NEW_EXE)} *project-reclaimer-v0.9.12.exe\r\n")
+        # a game version no real install has, so a game running on this Mac doesn't affect the tests
         self.env = dict(os.environ, RECLAIMER_HOME=str(self.home), RECLAIMER_REPO_RAW=self.raw.as_uri(),
-                        RECLAIMER_RELEASES=self.rel.as_uri())
+                        RECLAIMER_RELEASES=self.rel.as_uri(),
+                        RECLAIMER_GAME_PROCESS=r"project-reclaimer-v9\.9\.(98|99)\.exe game-client")
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -196,7 +198,7 @@ class UpdaterTest(unittest.TestCase):
         (self.home / "game" / "project-reclaimer-v0.9.8.exe").write_bytes(b"old")
         # e.g. a Terminal command that mentions the file; only the running game (".exe game-client") counts
         bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                      "rm", "project-reclaimer-v0.9.8.exe"])
+                                      "rm", "project-reclaimer-v9.9.99.exe"])
         try:
             rc, out = self.run_updater("game")
         finally:
@@ -206,7 +208,7 @@ class UpdaterTest(unittest.TestCase):
     def test_skipped_while_running_is_not_reported_as_up_to_date(self):
         (self.home / "game" / "project-reclaimer-v0.9.8.exe").write_bytes(b"old")
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 r"C:\game\project-reclaimer-v0.9.8.exe game-client --mcc-path x"])
+                                 r"C:\game\project-reclaimer-v9.9.99.exe game-client --mcc-path x"])
         try:
             rc, out = self.run_updater("run")
         finally:

@@ -33,7 +33,7 @@ func openInstalledAppAndQuit() {
     }
 }
 let accent = Color(red: 0.40, green: 0.70, blue: 0.30)
-let gameProcess = #"project-reclaimer-v[0-9.]+\.exe game-client"#
+let gameProcess = #"project-reclaimer(?:-client)?-v[0-9.]+\.exe game-client"#
 
 // MARK: - running the scripts
 

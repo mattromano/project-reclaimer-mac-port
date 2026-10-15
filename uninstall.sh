@@ -13,7 +13,7 @@ if [ -z "${RECLAIMER_YES:-}" ]; then
   [[ "$a" =~ ^[Yy] ]] || exit 0
 fi
 
-pkill -f 'project-reclaimer-v[0-9.]+\.exe' 2>/dev/null || true
+pkill -f 'project-reclaimer.*v[0-9.]+\.exe' 2>/dev/null || true
 pkill -f 'workshop_helper.py watch' 2>/dev/null || true
 pkill -f 'Project Reclaimer.app/Contents/MacOS/ProjectReclaimer' 2>/dev/null || true
 # (the Metal app came from older versions of the installer)

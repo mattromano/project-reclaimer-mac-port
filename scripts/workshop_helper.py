@@ -47,7 +47,7 @@ WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" /
 # Reclaimer's profile lives in the prefix (the installer unlinks Documents from ~/Documents)
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
             for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
-GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
+GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer(?:-client)?-v[0-9.]+\.exe game-client")  # (tests)
 GAME_GRACE = 60  # seconds the game must be gone before the watching helper stops
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")

@@ -154,7 +154,7 @@ bold "Project Reclaimer (latest release, checksum-verified)"
 RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/updater.py" game 2>>"$BASE/logs/launcher.log" |
   awk '!/^progress: / {sub(/^(status|done|error|offline): /, ""); print "    " $0; fflush()}' ||
   die "Could not install Project Reclaimer. Check your internet connection and run the installer again."
-ls "$BASE"/game/project-reclaimer-v*.exe >/dev/null 2>&1 ||
+ls "$BASE"/game/project-reclaimer*v*.exe >/dev/null 2>&1 ||
   die "Could not download Project Reclaimer. Check your internet connection and run the installer again."
 
 bold "Windows environment for the Wine version"

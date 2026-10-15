@@ -41,8 +41,8 @@ MCC_DIR = STEAMAPPS / "common" / "Halo The Master Chief Collection"
 APP = Path(os.environ.get("RECLAIMER_APP_PATH")
            or Path(os.environ.get("RECLAIMER_APPS_DIR", HOME / "Applications")) / "Project Reclaimer.app")
 DESKTOP = Path(os.environ.get("RECLAIMER_DESKTOP", HOME / "Desktop"))
-CLIENT_EXE = re.compile(r"^project-reclaimer-v[0-9.]+\.exe$")
-GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")
+CLIENT_EXE = re.compile(r"^project-reclaimer(?:-client)?-v[0-9.]+\.exe$")
+GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer(?:-client)?-v[0-9.]+\.exe game-client")
 DAEMON = "local.projectreclaimer.loopback"
 DAEMON_PLIST = f"/Library/LaunchDaemons/{DAEMON}.plist"
 INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST))  # (tests point it elsewhere)
@@ -249,7 +249,7 @@ def report():
         summary.append("Mac port version: " + (BASE / "version").read_text().strip())
     except OSError:
         summary.append("Mac port version: 1.0 or older")
-    summary.append("Game: " + ", ".join(sorted(p.name for p in GAME.glob("project-reclaimer-v*.exe"))))
+    summary.append("Game: " + ", ".join(sorted(p.name for p in list(GAME.glob("project-reclaimer-v*.exe")) + list(GAME.glob("project-reclaimer-client-v*.exe")))))
     summary.append(f"Free disk space: {shutil.disk_usage(BASE).free / 1e9:.0f} GB")
     summary.append("Network addresses: " + net_check())
     summary.append("Workshop mods: " + ", ".join(m["title"] for m in json.loads(mods())["mods"]))
@@ -301,7 +301,7 @@ def game_exe():
         chosen = ""
     if chosen and (GAME / "versions" / f"project-reclaimer-v{chosen}.exe").exists():
         return GAME / "versions", f"project-reclaimer-v{chosen}.exe"
-    exes = [e for e in GAME.glob("project-reclaimer-v*.exe") if CLIENT_EXE.match(e.name)]
+    exes = [e for e in list(GAME.glob("project-reclaimer-v*.exe")) + list(GAME.glob("project-reclaimer-client-v*.exe")) if CLIENT_EXE.match(e.name)]
     if not exes:
         return None, None
     newest = max(exes, key=lambda p: [int(x) for x in re.findall(r"\d+", p.name)])

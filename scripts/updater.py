@@ -41,9 +41,9 @@ RELEASES_API = os.environ.get("RECLAIMER_RELEASES_API", "https://api.github.com/
 RELEASE_DOWNLOADS = os.environ.get("RECLAIMER_RELEASE_DOWNLOADS", "https://github.com/ProjectReclaimer/"
                                    "project-reclaimer-releases/releases/download")
 MENU_DLLS = ("opengl32.dll", "libgallium_wgl.dll")  # Mesa, loaded from the exe's own folder
-CLIENT_EXE = re.compile(r"^project-reclaimer-v[0-9.]+\.exe$")
+CLIENT_EXE = re.compile(r"^project-reclaimer(?:-client)?-v[0-9.]+\.exe$")
 # the running game itself (as workshop_helper.py matches it), not any command that merely names the file
-GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
+GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer(?:-client)?-v[0-9.]+\.exe game-client")  # (tests)
 UA = {"User-Agent": "project-reclaimer-mac-port"}
 
 
@@ -210,7 +210,7 @@ def versions():
         version = str(r.get("tag_name", "")).lstrip("v")
         if not re.fullmatch(r"\d+(\.\d+){1,3}", version):
             continue
-        exe = f"project-reclaimer-v{version}.exe"
+        exe = f"project-reclaimer-client-v{version}.exe" if (VERSIONS / f"project-reclaimer-client-v{version}.exe").exists() or (GAME / f"project-reclaimer-client-v{version}.exe").exists() else f"project-reclaimer-v{version}.exe"
         items.append({"version": version, "date": str(r.get("published_at", ""))[:10],
                       "downloaded": (VERSIONS / exe).exists() or (GAME / exe).exists()})
     return json.dumps({"chosen": chosen, "versions": items})
@@ -238,7 +238,7 @@ def use(version):
 
 def remove_other_clients(exe):
     """run.sh starts the newest-named client, so only the verified one may stay (the dedicated server stays too)."""
-    for old in GAME.glob("project-reclaimer-v*.exe"):
+    for old in list(GAME.glob("project-reclaimer-v*.exe")) + list(GAME.glob("project-reclaimer-client-v*.exe")):
         if old.name != exe and CLIENT_EXE.match(old.name):
             old.unlink()
 

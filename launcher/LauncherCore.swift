@@ -268,7 +268,12 @@ func installedVersion(gameDir: URL) -> String? {
         .trimmingCharacters(in: .whitespacesAndNewlines), !chosen.isEmpty { return chosen }
     let names = (try? FileManager.default.contentsOfDirectory(atPath: gameDir.path)) ?? []
     return names.compactMap { n -> String? in
-        guard n.hasPrefix("project-reclaimer-v"), n.hasSuffix(".exe") else { return nil }
-        return String(n.dropFirst(19).dropLast(4))
+        if n.hasPrefix("project-reclaimer-client-v") && n.hasSuffix(".exe") {
+            return String(n.dropFirst(26).dropLast(4))
+        }
+        if n.hasPrefix("project-reclaimer-v") && n.hasSuffix(".exe") {
+            return String(n.dropFirst(19).dropLast(4))
+        }
+        return nil
     }.max { versionParts($0).lexicographicallyPrecedes(versionParts($1)) }
 }

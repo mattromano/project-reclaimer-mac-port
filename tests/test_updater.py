@@ -95,6 +95,17 @@ class UpdaterTest(unittest.TestCase):
         self.assertFalse((self.home / "install-called").exists())
         self.assertNotIn("relaunch", out)
 
+    def test_client_named_release_installed(self):
+        (self.rel / "project-reclaimer-client-v0.9.18.exe").write_bytes(NEW_EXE)
+        (self.rel / "SHA256SUMS.txt").write_text(f"{sha(NEW_EXE)}  project-reclaimer-client-v0.9.18.exe\n")
+        game = self.home / "game"
+        (game / "project-reclaimer-v0.9.12.exe").write_bytes(b"old")
+        rc, out = self.run_updater("game")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("status: Updating Project Reclaimer to 0.9.18…", out)
+        self.assertEqual(self.game_files(), ["project-reclaimer-client-v0.9.18.exe"])
+        self.assertEqual(out[-1], "done: updated")
+
     def test_new_game_release_replaces_old_and_mislabeled_exes(self):
         game = self.home / "game"
         (game / "project-reclaimer-v0.9.8.exe").write_bytes(b"old")

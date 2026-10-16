@@ -164,6 +164,8 @@ struct HelpPanel: View {
          "Turn the controller on before you press Play: the game looks for controllers when it starts. If it still isn't seen, restart your Mac. macOS's game controller service sometimes gets stuck, and then no app can see a controller until a restart (this window warns you when it notices)."),
         ("Graphics card stopped responding",
          "Start the game again. If it keeps happening, lower Settings > Render resolution in the game."),
+        ("No sound, or sound from the wrong speakers",
+         "The game keeps the sound output your Mac had when you pressed Play, so headphones put in afterwards stay silent, and so does a muted output. This window's Sound line shows where the sound goes: pick the output you want in the Sound menu (and un-mute it) before Play. Already playing? Switch your Mac's sound back to the output the game started with, or quit and press Play again."),
     ]
 
     var body: some View {
@@ -218,6 +220,10 @@ struct ContentView: View {
                 if let controllers = m.controllers {
                     Divider()
                     StepRow(title: "Controller", step: controllers)
+                }
+                if let sound = m.sound {
+                    Divider()
+                    StepRow(title: "Sound", step: sound)
                 }
                 if m.signingIn { SignInCard(qr: m.qr, onSkip: m.skipSteam) }
                 if m.steamSlow {

@@ -34,6 +34,8 @@ final class Launcher: ObservableObject {
     @Published var helpOpen = false
     @Published var network: Step? { didSet { if network != oldValue, let n = network { log("network: \(n)") } } }
     @Published var controllers: Step? { didSet { if controllers != oldValue, let c = controllers { log("controllers: \(c)") } } }
+    /// Where the Mac's sound goes: the game keeps that output once it starts, so it is shown (and warned about) before Play.
+    @Published var sound: Step? { didSet { if sound != oldValue, let s = sound { log("sound: \(s)") } } }
     @Published var notice: String?   // a plain-language note, e.g. after Tools stopped the game
     @Published var showTools = false
     /// An older Project Reclaimer the player chose for servers that haven't updated (nil: the newest).
@@ -123,6 +125,7 @@ final class Launcher: ObservableObject {
                 steam = .done("Steam connected")
             } else {
                 runUpdate()  // (then the network check and Steam: never alongside an update's own network step)
+                checkSound()
             }
         }
     }
@@ -150,6 +153,32 @@ final class Launcher: ObservableObject {
             controllers = .warning("Your Mac's game controller service is stuck, so the game won't see a controller. "
                                    + "Restart your Mac to fix it (Apple menu > Restart). Keyboard and mouse still work.")
         }, onExit: { _ in }))
+    }
+
+    /// The game (Wine's CoreAudio driver) keeps the sound output it starts with: headphones put in afterwards stay
+    /// silent, and so does an output that is muted or a virtual device with no speaker behind it. Show where the
+    /// sound goes before Play, and warn. Re-run every few seconds while waiting, since people put headphones in late.
+    private var checkingSound = false
+    func checkSound() {
+        guard !checkingSound else { return }
+        let before = "before you press Play: the game keeps the sound output it starts with."
+        let check = python("tools.py", ["audio-check"], onLine: { [self] line in
+            switch SoundEvent(line: line) {
+            case .ok(let output): sound = .done(output)
+            case .muted(let output):
+                sound = .warning("Your Mac's sound goes to \(output), which is muted, so the game will be silent. "
+                                 + "Un-mute it (or pick your headphones) in the Sound menu \(before)")
+            case .virtual(let output):
+                sound = .warning("Your Mac's sound goes to \(output), which has no speaker behind it, so you won't hear "
+                                 + "the game. Pick your speakers or headphones in the Sound menu \(before)")
+            case .headset(let headset, let output):
+                sound = .warning("\(headset) is connected, but your Mac's sound goes to \(output). To hear the game in "
+                                 + "\(headset), pick it in the Sound menu \(before)")
+            case .other: break
+            }
+        }, onExit: { [self] _ in checkingSound = false })
+        checkingSound = check != nil
+        keep(check)
     }
 
     private func keep(_ p: LineProcess?) { if let p { running.append(p) } }
@@ -457,6 +486,7 @@ final class Launcher: ObservableObject {
     private func tick() {
         ticks += 1
         running.removeAll { !$0.isRunning }
+        if ticks % 10 == 0, !playing { checkSound() }  // headphones put in while the window waits
         if let id = testGet, case .done = steam { testGet = nil; link = id; getMod() }
         if testAutoplay, ready { testAutoplay = false; play() }
         if testSwitch, let j = joinTrouble, j.serverVersion != nil, !j.asking { testSwitch = false; switchAndRejoin() }

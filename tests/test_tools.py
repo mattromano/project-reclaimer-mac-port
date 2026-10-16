@@ -97,6 +97,67 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(out[-1], ("ok", "stuck"))
 
+    # ---- sound -------------------------------------------------------------------------------------------------
+    SPEAKERS = ("MacBook Pro Speakers", True, "coreaudio_device_type_builtin")
+    AIRPODS = ("Chris AirPods Pro", False, "coreaudio_device_type_bluetooth")
+    TEAMS = ("Microsoft Teams Audio", False, "coreaudio_device_type_virtual")
+
+    def audio(self, devices, muted=False):
+        t = self.load()
+        with mock.patch.object(t, "output_devices", return_value=devices), \
+                mock.patch.object(t, "output_muted", return_value=muted):
+            return t.audio_check()
+
+    def test_audio_check_says_where_the_sound_goes(self):
+        # the game keeps the output it starts with, so the window shows it before Play
+        self.assertEqual(self.audio([self.SPEAKERS, self.TEAMS]), "ok\tMacBook Pro Speakers")
+        airpods_chosen = [self.SPEAKERS[:1] + (False,) + self.SPEAKERS[2:], self.AIRPODS[:1] + (True,) + self.AIRPODS[2:]]
+        self.assertEqual(self.audio(airpods_chosen), "ok\tChris AirPods Pro")
+
+    def test_audio_check_warns_about_a_muted_output(self):
+        self.assertEqual(self.audio([self.SPEAKERS, self.AIRPODS], muted=True), "muted\tMacBook Pro Speakers")
+
+    def test_audio_check_warns_about_headphones_that_are_not_the_output(self):
+        # AirPods connected (e.g. from the iPhone) while the Mac still plays through its speakers: the game would
+        # start on the speakers and stay there even after the AirPods are put in
+        self.assertEqual(self.audio([self.SPEAKERS, self.AIRPODS, self.TEAMS]),
+                         "headset\tChris AirPods Pro\tMacBook Pro Speakers")
+
+    def test_audio_check_warns_about_a_virtual_output(self):
+        teams_chosen = [self.SPEAKERS[:1] + (False,) + self.SPEAKERS[2:], self.TEAMS[:1] + (True,) + self.TEAMS[2:]]
+        self.assertEqual(self.audio(teams_chosen), "virtual\tMicrosoft Teams Audio")
+
+    def test_audio_check_is_quiet_when_macos_cannot_tell(self):
+        self.assertEqual(self.audio([]), "ok")
+        self.assertEqual(self.audio([self.SPEAKERS], muted=None), "ok\tMacBook Pro Speakers")
+
+    def test_output_devices_reads_system_profiler(self):
+        t = self.load()
+        profile = json.dumps({"SPAudioDataType": [{"_items": [
+            {"_name": "MacBook Pro Microphone", "coreaudio_device_input": 1,
+             "coreaudio_device_transport": "coreaudio_device_type_builtin"},
+            {"_name": "MacBook Pro Speakers", "coreaudio_default_audio_output_device": "spaudio_yes",
+             "coreaudio_device_output": 2, "coreaudio_device_transport": "coreaudio_device_type_builtin"},
+            {"_name": "Chris AirPods Pro", "coreaudio_device_input": 1, "coreaudio_device_output": 2,
+             "coreaudio_device_transport": "coreaudio_device_type_bluetooth"}]}]})
+        with mock.patch.object(t.subprocess, "run", return_value=mock.Mock(stdout=profile)):
+            self.assertEqual(t.output_devices(), [self.SPEAKERS, self.AIRPODS])
+        with mock.patch.object(t.subprocess, "run", return_value=mock.Mock(stdout="not json")):
+            self.assertEqual(t.output_devices(), [])
+        with mock.patch.object(t.subprocess, "run", side_effect=OSError):
+            self.assertEqual(t.output_devices(), [])
+
+    def test_output_muted_reads_the_volume_settings(self):
+        t = self.load()
+        for answer, expected in (("true\n", True), ("false\n", False), ("", None)):
+            with mock.patch.object(t.subprocess, "run", return_value=mock.Mock(stdout=answer)):
+                self.assertEqual(t.output_muted(), expected)
+
+    def test_audio_check_command(self):
+        rc, out = self.run_tool("audio-check")
+        self.assertEqual(rc, 0)
+        self.assertIn(out[-1].split("\t")[0], ("ok", "muted", "virtual", "headset"))
+
     # ---- network -----------------------------------------------------------------------------------------------
     def test_net_check_needs_every_range(self):
         t = self.load()

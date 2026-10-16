@@ -23,6 +23,15 @@ check(SteamEvent(line: "offline") == .offline, "offline")
 check(SteamEvent(line: "error: Expired") == .error("Expired"), "error")
 check(SteamEvent(line: "qr:   ██") == .qrRow("  ██"), "qr row keeps leading spaces")
 
+// sound lines
+check(SoundEvent(line: "ok\tChris AirPods Pro") == .ok(output: "Chris AirPods Pro"), "sound ok")
+check(SoundEvent(line: "muted\tMacBook Pro Speakers") == .muted(output: "MacBook Pro Speakers"), "sound muted")
+check(SoundEvent(line: "virtual\tMicrosoft Teams Audio") == .virtual(output: "Microsoft Teams Audio"), "sound virtual")
+check(SoundEvent(line: "headset\tChris AirPods Pro\tMacBook Pro Speakers")
+      == .headset("Chris AirPods Pro", output: "MacBook Pro Speakers"), "sound headset")
+check(SoundEvent(line: "ok") == .other, "sound unknown stays quiet")
+check(SoundEvent(line: "") == .other, "sound empty line")
+
 // QR grid from real DepotDownloader output (captured 2026-10-10 from DepotDownloader 3.4.0, 37 rows)
 let here = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let captured = (try? String(contentsOf: here.appendingPathComponent("qr-sample.txt"), encoding: .utf8)) ?? ""

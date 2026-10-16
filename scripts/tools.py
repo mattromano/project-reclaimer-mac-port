@@ -4,6 +4,8 @@
   net-check          "ok" or "missing": are the local network addresses Reclaimer needs on lo0?
   net-fix            reinstall + restart the network startup task (one macOS password prompt)
   controller-check   "stuck" if macOS's game controller service is stuck (no app sees controllers until a restart)
+  audio-check        where the Mac's sound goes, tab-separated: "ok <output>", "muted <output>", "virtual <output>"
+                     or "headset <headphones> <output>" (the game keeps the output it starts with)
   crash-check        "crash: <plain explanation>" if the last game log shows a crash, else "ok"
   force-quit         stop the game, Wine and wineserver for this install (frozen windows Force Quit can't close)
   mods               JSON: downloaded Workshop mods with titles and sizes, plus free disk space
@@ -149,6 +151,50 @@ def controller_check():
         if "U" not in (gamecontrollerd_state() or ""):
             return "ok"
     return "stuck"
+
+
+def output_devices():
+    """macOS's sound output devices: [(name, is the default output, transport)], or [] when it can't tell."""
+    try:
+        out = subprocess.run(["/usr/sbin/system_profiler", "SPAudioDataType", "-json"], capture_output=True,
+                             text=True, timeout=20).stdout
+        items = [d for group in json.loads(out).get("SPAudioDataType", []) for d in group.get("_items", [])]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [(d.get("_name", ""), d.get("coreaudio_default_audio_output_device") == "spaudio_yes",
+             d.get("coreaudio_device_transport", ""))
+            for d in items if d.get("coreaudio_device_output")]
+
+
+def output_muted():
+    """Whether the Mac's sound output is muted, or None when it can't tell."""
+    try:
+        out = subprocess.run(["/usr/bin/osascript", "-e", "output muted of (get volume settings)"],
+                             capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"true": True, "false": False}.get(out)
+
+
+def audio_check():
+    """Where the Mac's sound goes. The game (Wine's CoreAudio driver) keeps the output device it starts with, so
+    headphones picked afterwards stay silent, and so does an output that is muted. Tab-separated, since device
+    names have spaces: "ok <output>", "muted <output>", "virtual <output>" (a virtual device such as a meeting
+    app's, with no speaker behind it) or "headset <headphones> <output>" (Bluetooth headphones connected but not
+    the output). Plain "ok" when macOS can't tell: never keeps anyone from playing."""
+    devices = output_devices()
+    output = next((name for name, is_default, _ in devices if is_default), None)
+    if not output:
+        return "ok"
+    if output_muted():
+        return f"muted\t{output}"
+    transport = next(t for name, is_default, t in devices if is_default)
+    if "virtual" in transport:
+        return f"virtual\t{output}"
+    headset = next((name for name, is_default, t in devices if not is_default and "bluetooth" in t), None)
+    if headset:
+        return f"headset\t{headset}\t{output}"
+    return f"ok\t{output}"
 
 
 CRASHES = [
@@ -363,8 +409,9 @@ def uninstall():
 
 
 COMMANDS = {"net-check": net_check, "net-fix": net_fix, "controller-check": controller_check,
-            "crash-check": crash_check, "force-quit": force_quit, "mods": mods, "report": report,
-            "reset-graphics": reset_graphics, "forget-steam": forget_steam, "repair": repair, "uninstall": uninstall}
+            "audio-check": audio_check, "crash-check": crash_check, "force-quit": force_quit, "mods": mods,
+            "report": report, "reset-graphics": reset_graphics, "forget-steam": forget_steam, "repair": repair,
+            "uninstall": uninstall}
 
 
 def main(argv):

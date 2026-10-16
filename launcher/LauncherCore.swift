@@ -20,6 +20,22 @@ enum UpdaterEvent: Equatable {
     }
 }
 
+/// One line from `tools.py audio-check`: where the Mac's sound goes (tab-separated, as device names have spaces).
+enum SoundEvent: Equatable {
+    case ok(output: String), muted(output: String), virtual(output: String), headset(String, output: String), other
+
+    init(line: String) {
+        let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        switch (parts[0], parts.count) {
+        case ("ok", 2): self = .ok(output: parts[1])
+        case ("muted", 2): self = .muted(output: parts[1])
+        case ("virtual", 2): self = .virtual(output: parts[1])
+        case ("headset", 3): self = .headset(parts[1], output: parts[2])
+        default: self = .other
+        }
+    }
+}
+
 /// One line from `workshop_helper.py login-check` or `login-qr`.
 enum SteamEvent: Equatable {
     case qrBegin, qrRow(String), qrEnd, ok(account: String), needLogin, offline, error(String), other

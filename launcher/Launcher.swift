@@ -36,6 +36,7 @@ final class Launcher: ObservableObject {
     @Published var controllers: Step? { didSet { if controllers != oldValue, let c = controllers { log("controllers: \(c)") } } }
     @Published var notice: String?   // a plain-language note, e.g. after Tools stopped the game
     @Published var showTools = false
+@Published var showController = false
     /// An older Project Reclaimer the player chose for servers that haven't updated (nil: the newest).
     @Published var chosenVersion: String? { didSet { if chosenVersion != oldValue { log("chosen version: \(chosenVersion ?? "newest")") } } }
     let tools = ToolsModel()

@@ -29,7 +29,7 @@ MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
-LAUNCHER_SHA=59f497fc9aa7205a975508a61a1d0b80033ae4549edd23c6d1e1a6312d9564e1  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
+LAUNCHER_SHA=b6283695750a0dae0c045eb544ad2c0b34c80bfa373a6860c2626f1506f14402  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
 GUI=${RECLAIMER_GUI:-}
 # give up on a stalled connection instead of hanging (the launcher waits for this when updating)
@@ -131,6 +131,20 @@ if [ "$(strings "$MVK_LIB" | grep -cx '1.4.2')" = 0 ]; then
   rm -f "$MVK_LIB"
   cp "$CACHE/MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" "$MVK_LIB"
 fi
+# Route gamepads cleanly through SDL2 by preventing raw IOHID device registration
+WINEBUS_SO="$BASE/wine/Wine Staging.app/Contents/Resources/wine/lib/wine/x86_64-unix/winebus.so"
+if [ -f "$WINEBUS_SO" ]; then
+  /usr/bin/python3 -c '
+import sys
+p = sys.argv[1]
+with open(p, "rb") as f: d = bytearray(f.read())
+sig = bytes.fromhex("554889e553504889fb")
+if d[0x810:0x819] == sig:
+    d[0x810:0x819] = bytes.fromhex("b8010000c0c3909090")
+    with open(p, "wb") as f: f.write(d)
+' "$WINEBUS_SO" 2>/dev/null || true
+  codesign --force --sign - "$WINEBUS_SO" 2>/dev/null || true
+fi
 note "ok"
 
 bold "Menu library (Mesa)"
@@ -144,9 +158,15 @@ note "ok"
 bold "Game scripts and Workshop mod helper"
 # (the network files are kept here too, so the window's network fix can reinstall the startup task)
 for f in run.sh launch.sh workshop_helper.py presets.py updater.py tools.py reclaimer-loopback.sh \
-         local.projectreclaimer.loopback.plist; do script_file "scripts/$f" "$BASE/game/$f"; done
+         local.projectreclaimer.loopback.plist gamecontrollerdb.txt rumble_bridge.c; do script_file "scripts/$f" "$BASE/game/$f"; done
 chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py" \
   "$BASE/game/tools.py"
+WINE_LIB="$BASE/wine/Wine Staging.app/Contents/Resources/wine/lib"
+if [ -d "$WINE_LIB" ] && [ -f "$BASE/game/rumble_bridge.c" ] && [ ! -f "$WINE_LIB/librumble_bridge.dylib" ]; then
+  clang -arch x86_64 -dynamiclib -I/opt/homebrew/include -L"$WINE_LIB" -lSDL2 \
+    -framework IOKit -framework CoreFoundation -o "$WINE_LIB/librumble_bridge.dylib" "$BASE/game/rumble_bridge.c" 2>/dev/null || true
+  codesign --force --sign - "$WINE_LIB/librumble_bridge.dylib" 2>/dev/null || true
+fi
 note "ok"
 
 bold "Project Reclaimer (latest release, checksum-verified)"
@@ -162,6 +182,8 @@ WINE_BIN="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin"
 if [ ! -f "$BASE/prefix-wine/system.reg" ]; then
   # (mscoree/mshtml off: no Wine Mono/Gecko install dialogs; the game doesn't use them)
   WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" "$WINE_BIN/wine" wineboot -i >/dev/null 2>&1 || true
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wine" reg add "HKLM\\System\\CurrentControlSet\\Services\\winebus" /v "Enable SDL" /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wine" reg add "HKLM\\System\\CurrentControlSet\\Services\\winebus" /v "DisableHidraw" /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
   WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
 fi
 unlink_documents "$BASE/prefix-wine"

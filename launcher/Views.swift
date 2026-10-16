@@ -289,6 +289,7 @@ struct ContentView: View {
         .padding(24)
         .frame(width: 480)
         .sheet(isPresented: $m.showTools) { ToolsSheet(launcher: m, t: m.tools) }
+        .sheet(isPresented: $m.showController) { ControllerSheet(launcher: m) }
     }
 
     private var playLabel: String {
@@ -301,6 +302,12 @@ struct ContentView: View {
 
     private var header: some View {
         AppHeader(subtitle: m.playing ? "Have fun! This window shows mod downloads while you play." : "Halo 3 on your Mac") {
+            Button { m.showController = true } label: {
+                Label("Controller", systemImage: "gamecontroller").labelStyle(.titleAndIcon)
+            }
+            .controlSize(.large)
+            .help("Test and map game controller, check inputs and vibration")
+
             Button { m.showTools = true } label: {
                 Label("Tools", systemImage: "gearshape").labelStyle(.titleAndIcon)
             }

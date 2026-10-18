@@ -6,6 +6,8 @@
 # Everything lives in ~/Games/ProjectReclaimer (override with RECLAIMER_HOME). Safe to re-run: finished steps are skipped.
 # Options (environment variables):
 #   RECLAIMER_MCC_FROM=<dir>    copy existing MCC game files from <dir> instead of downloading them from Steam
+#   RECLAIMER_ODST=1            also download Halo 3: ODST (~9 GB more) for its campaign and Firefight; re-running
+#                               the installer with it adds ODST to an existing install
 #   RECLAIMER_CACHE=<dir>       reuse already-downloaded archives from <dir>
 #   RECLAIMER_UPDATE=1          update an existing install without questions (run by the launcher's updater.py):
 #                               admin steps use macOS's password dialog instead of sudo
@@ -21,6 +23,8 @@ STEAM_REL="drive_c/Program Files (x86)/Steam"
 MCC_REL="$STEAM_REL/steamapps/common/Halo The Master Chief Collection"
 MCC_APP=976730
 MCC_DEPOTS="976731 976738 976739"   # MCC base, Halo 3, Halo 3 multiplayer (~35 GB)
+ODST_DEPOT=1064222                  # Halo 3: ODST (~9 GB, optional; Project Reclaimer 0.9.19+ plays it)
+ODST=${RECLAIMER_ODST:-}
 
 # name|url|sha256
 WINE_PKG="wine-staging-11.18-osx64.tar.xz|https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-staging-11.18-osx64.tar.xz|b63704b91af269bc026a87f12bd297c4a50caaf570c322e600b6621ef918f127"
@@ -94,9 +98,10 @@ note "Installs into: $BASE"
 MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 [ "$MACOS_MAJOR" -ge 14 ] || die "This needs macOS 14 Sonoma or newer."
 FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
+NEED_GB=45; [ -n "$ODST" ] && NEED_GB=54
 # (only a first install downloads the ~35 GB of game files; re-running it over an existing install needs ~1 GB)
-[ "$FREE_GB" -ge 45 ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || [ -n "$UPDATE" ] ||
-  [ -f "$BASE/prefix-wine/$MCC_REL/halo3/halo3.dll" ] || die "Need about 45 GB free disk space (have ${FREE_GB} GB)."
+[ "$FREE_GB" -ge "$NEED_GB" ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || [ -n "$UPDATE" ] ||
+  [ -f "$BASE/prefix-wine/$MCC_REL/halo3/halo3.dll" ] || die "Need about $NEED_GB GB free disk space (have ${FREE_GB} GB)."
 mkdir -p "$BASE"/{game,tools,logs} "$CACHE"
 if [ -n "$GUI" ]; then
   # anything failing without its own message still tells the window which step it was
@@ -188,7 +193,18 @@ note "ok"
 
 bold "Halo 3 game files (your Steam copy of Halo: The Master Chief Collection)"
 MCC_DIR="$BASE/prefix-wine/$MCC_REL"
-if [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ]; then
+[ -n "$ODST" ] && [ ! -f "$MCC_DIR/halo3odst/halo3odst.dll" ] && MCC_DEPOTS="$MCC_DEPOTS $ODST_DEPOT"
+if [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ] && [ -z "$UPDATE" ] && [ -n "$ODST" ] &&
+   [ ! -f "$MCC_DIR/halo3odst/halo3odst.dll" ]; then
+  note "Halo 3 is installed; adding Halo 3: ODST (~9 GB). Sign in with the QR code if one appears."
+  if [ -n "$GUI" ]; then
+    RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/workshop_helper.py" game-download "$MCC_DIR" --odst \
+      2>>"$BASE/logs/launcher.log" || exit 1
+  else
+    "$BASE/tools/DepotDownloader" -app $MCC_APP -depot $ODST_DEPOT -os windows -qr -remember-password \
+      -dir "$MCC_DIR" -validate </dev/tty || die "Steam download failed. Re-run the installer to resume."
+  fi
+elif [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ]; then
   note "already installed"
 elif [ -n "$UPDATE" ]; then
   die "Halo 3's game files are missing. Open the Project Reclaimer disk image and run the installer again."
@@ -197,13 +213,15 @@ elif [ -n "${RECLAIMER_MCC_FROM:-}" ]; then
   note "copied from $RECLAIMER_MCC_FROM"
 elif [ -n "$GUI" ]; then
   # the window shows the QR code and a progress bar; the account name is saved, so mods never ask to sign in
-  RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/workshop_helper.py" game-download "$MCC_DIR" 2>>"$BASE/logs/launcher.log" ||
+  RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/workshop_helper.py" game-download "$MCC_DIR" ${ODST:+--odst} \
+    2>>"$BASE/logs/launcher.log" ||
     exit 1  # (it printed the reason)
   [ -f "$MCC_DIR/halo3/halo3.dll" ] || die "Halo 3's files are missing after the download. Try again to resume."
 else
   note "You need to own Halo: The Master Chief Collection on Steam."
   note "A QR code will appear: open the Steam app on your phone > Steam Guard / sign-in QR and scan it."
-  note "Only Halo 3 is downloaded (~35 GB). This can take a while."
+  if [ -n "$ODST" ]; then note "Halo 3 and Halo 3: ODST are downloaded (~44 GB). This can take a while."
+  else note "Only Halo 3 is downloaded (~35 GB; RECLAIMER_ODST=1 adds ODST). This can take a while."; fi
   read -r -p "    Press Return to continue..." _ </dev/tty
   mkdir -p "$MCC_DIR"
   # shellcheck disable=SC2086

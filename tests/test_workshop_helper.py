@@ -433,6 +433,20 @@ class HelperTest(unittest.TestCase):
         for a in ["-qr", "-validate", "-remember-password", "976731", "976738", "976739", str(dest)]:
             self.assertIn(a, run)
 
+    def test_game_download_adds_odst_when_asked_or_installed(self):
+        (self.home / "steam-account").write_text("RealName_1\n")
+        self.fake(["Logging 'RealName_1' into Steam3...", " Done!", "100.00% halo3/halo3.dll"])
+        dest = self.home / "mcc"
+        self.run_helper("game-download", str(dest))
+        self.assertNotIn("1064222", self.depot_runs()[-1])  # Halo 3 only, unless the player asks
+        self.run_helper("game-download", str(dest), "--odst")
+        self.assertIn("1064222", self.depot_runs()[-1])
+        self.assertIn("976738", self.depot_runs()[-1])
+        (dest / "halo3odst").mkdir()
+        (dest / "halo3odst" / "halo3odst.dll").write_bytes(b"MZ")
+        self.run_helper("game-download", str(dest))  # Repair checks ODST too once it's installed
+        self.assertIn("1064222", self.depot_runs()[-1])
+
     def test_game_download_uses_the_saved_login(self):
         (self.home / "steam-account").write_text("RealName_1\n")
         self.fake(["Logging 'RealName_1' into Steam3...", " Done!", "100.00% halo3/halo3.dll"])

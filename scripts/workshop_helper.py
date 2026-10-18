@@ -14,11 +14,12 @@ Steam sign-in (used by the launcher before the game starts; prints one result li
   login-check   "ok <account>", "need-login" or "offline": does the saved Steam login still work?
   login-qr      QR sign-in: "qr-begin", "qr: <row>"..., "qr-end" for each code DepotDownloader shows, then
                 "ok <account>" (saved to steam-account) or "error: <reason>"
-  game-download <folder>   Halo 3's game files from the player's Steam copy (first install, Repair game files):
-                QR codes as above when needed, "progress: <percent>", then "ok" or "error: <plain reason>"
+  game-download <folder> [--odst]   Halo 3's game files from the player's Steam copy (first install, Repair game
+                files), and Halo 3: ODST's with --odst or once it's installed: QR codes as above when needed,
+                "progress: <percent>", then "ok" or "error: <plain reason>"
 
 Usage: workshop_helper.py watch | get [--in-game] <workshop id or title>... | login-check | login-qr |
-       game-download <folder>
+       game-download <folder> [--odst]
 """
 import fcntl
 import json
@@ -231,14 +232,23 @@ def login_qr():
 
 
 MCC_DEPOTS = ["976731", "976738", "976739"]  # MCC base, Halo 3, Halo 3 multiplayer (~35 GB)
+# Halo 3: ODST (~9 GB, optional): Project Reclaimer 0.9.19+ plays its campaign and Firefight from halo3odst/
+ODST_DEPOT = "1064222"
 NOT_OWNED = re.compile(r"is not available from this account|No subscription|AccessDenied for (app|depot)", re.I)
 
 
-def game_download(dest):
-    """Download (or check and repair) Halo 3's game files from the player's own Steam copy, for the launcher
-    window: QR codes and "progress: <percent>" lines, then "ok" or "error: <plain reason>"."""
+def odst_installed(dest):
+    return (Path(dest) / "halo3odst" / "halo3odst.dll").is_file()
+
+
+def game_download(dest, depots=None):
+    """Download (or check and repair) the game files from the player's own Steam copy, for the launcher window:
+    QR codes and "progress: <percent>" lines, then "ok" or "error: <plain reason>". By default Halo 3's depots, and
+    ODST's too once it's installed (so Repair checks it)."""
+    if depots is None:
+        depots = MCC_DEPOTS + ([ODST_DEPOT] if odst_installed(dest) else [])
     Path(dest).mkdir(parents=True, exist_ok=True)
-    base = [str(DEPOT), "-app", APP_ID, "-depot", *MCC_DEPOTS, "-os", "windows", "-dir", str(dest), "-validate"]
+    base = [str(DEPOT), "-app", APP_ID, "-depot", *depots, "-os", "windows", "-dir", str(dest), "-validate"]
     last, signed_in = [0.0], [False]
 
     def progress(line):
@@ -588,7 +598,7 @@ def watch():
 
 def main(argv):
     if len(argv) >= 3 and argv[1] == "game-download":
-        result = game_download(argv[2])
+        result = game_download(argv[2], MCC_DEPOTS + [ODST_DEPOT] if "--odst" in argv[3:] else None)
         print(result, flush=True)
         return 0 if result == "ok" else 1
     if len(argv) < 2 or argv[1] not in ("watch", "get", "login-check", "login-qr"):

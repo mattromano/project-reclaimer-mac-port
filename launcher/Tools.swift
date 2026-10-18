@@ -190,7 +190,7 @@ struct ToolsSheet: View {
                             }
                         }
                         tool("Play an older version", t.showVersions ? "Hide" : "Choose…",
-                             "Usually not needed: when a join fails because of the version, the main window offers to switch and rejoin. Each version is a ~36 MB download the first time, and lasts until you close Project Reclaimer.") {
+                             "Usually not needed: when a join fails because of the version, the main window offers to switch and rejoin. Each version is a ~45 MB download the first time, and lasts until you close Project Reclaimer.") {
                             t.showVersions.toggle()
                             if t.showVersions, t.versions == nil { t.loadVersions() }
                         }

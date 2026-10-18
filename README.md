@@ -84,9 +84,12 @@ files against Steam, see **Mods and disk space** and remove mods, **Restore** th
 **A server on an older Project Reclaimer?** Releases come out about twice a day, and a server only a day behind can't
 be joined with the newest version. When a join fails, the window finds out which version the server runs (the game's
 error says so, or the window asks the server) and offers **Switch to 0.9.x and rejoin**: the game restarts on that
-version and joins the server by itself. The version downloads once (~36 MB, checksum-verified) and is kept; it lasts
+version and joins the server by itself. The version downloads once (~45 MB, checksum-verified) and is kept; it lasts
 until you close Project Reclaimer, so the next start is back on the newest. Tools → **Game version** does the same by
 hand, with a list of recent releases.
+
+Since Project Reclaimer 0.9.20, servers choose the on-foot camera; where they let players choose, **P** switches
+between first and third person (bind a controller button in the game's Settings → Controller).
 
 Why mods need Steam: without the Steam client, the game downloads mods from the game servers, which cap sharing at
 ~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper next to the game fetches the same

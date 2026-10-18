@@ -440,7 +440,9 @@ final class Launcher: ObservableObject {
     }
 
     /// The game ended: if its log shows a crash, say what happened and stay open for Play again; otherwise close
-    /// (or, within seconds of Play, say it closed right away).
+    /// (or, within seconds of Play, say it closed right away). Never while Tools is open: macOS refuses to quit
+    /// with a sheet open (and beeps each time), then quit as soon as Done closed it, mid-way through what the
+    /// player was doing there (a repair download, say). The window stays, ready to Play again.
     private func gameEnded(early: Bool) {
         guard !checkingCrash else { return }
         checkingCrash = true
@@ -453,17 +455,19 @@ final class Launcher: ObservableObject {
                 playing = false
                 gameGoneSince = nil
                 gameError = crash
-            } else if early {
-                gameStopped(early: true)
             } else {
-                NSApp.terminate(nil)
+                closeOrStay(early: early)
             }
         })
         guard let check else {  // couldn't even run the check: never stay stuck on "Playing"
             checkingCrash = false
-            return early ? gameStopped(early: true) : NSApp.terminate(nil)
+            return closeOrStay(early: early)
         }
         keep(check)
+    }
+
+    private func closeOrStay(early: Bool) {
+        if early || showTools || tools.busy != nil { gameStopped(early: early) } else { NSApp.terminate(nil) }
     }
 
     private func gameStopped(early: Bool) {

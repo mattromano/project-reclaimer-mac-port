@@ -13,7 +13,7 @@ and adds a **Project Reclaimer** app to your Mac.
 
 - Apple Silicon Mac (M1 or newer), macOS 14 Sonoma or newer, 16 GB RAM recommended
 - **Halo: The Master Chief Collection on Steam**, plus the Steam app on your phone (to sign in with a QR code)
-- ~45 GB free disk space
+- ~45 GB free disk space (~54 GB with Halo 3: ODST)
 - Your Mac's admin password once
 
 ## Install
@@ -24,7 +24,8 @@ and adds a **Project Reclaimer** app to your Mac.
    the first time macOS blocks it: click **Done**, open System Settings → Privacy & Security, and click
    **Open Anyway** (the disk image has a picture of this). You only do this once.
 3. The window checks your Mac (Apple Silicon, macOS 14+, ~45 GB free, Apple's developer tools, which it helps you
-   install if they're missing) and shows **Install**. Then it:
+   install if they're missing) and shows **Install**, with a checkbox to **also download Halo 3: ODST** (about 9 GB
+   more; see [Halo 3: ODST](#halo-3-odst)). Then it:
    - downloads Wine, DXVK-macOS, MoltenVK, Mesa, DepotDownloader and the latest Project Reclaimer, checking every
      file against a known SHA-256 checksum;
    - shows a **QR code**: scan it with the Steam app on your phone. Only Halo 3 is downloaded, from your own Steam
@@ -76,8 +77,8 @@ Before Play, the window also checks the local network addresses the game needs (
 or a macOS update) and fixes them with one password prompt. If the game crashes, the window says what happened in
 plain words and stays open for **Play again**.
 
-**Tools** (the gear button) handles the rest without Terminal: **Force Quit** a frozen game, **Repair** Halo 3's
-files against Steam, see **Mods and disk space** and remove mods, **Restore** the recommended graphics settings,
+**Tools** (the gear button) handles the rest without Terminal: **Force Quit** a frozen game; under **Installed
+games**, add or remove Halo 3 and Halo 3: ODST, **Repair** either one's files against Steam, or open its folder; see **Mods and disk space** and remove mods, **Restore** the recommended graphics settings,
 **Switch** Steam accounts, **Make Report** (a zip of the logs on your Desktop, without your Steam account name), and
 **Uninstall**.
 
@@ -90,6 +91,18 @@ hand, with a list of recent releases.
 
 Since Project Reclaimer 0.9.20, servers choose the on-foot camera; where they let players choose, **P** switches
 between first and third person (bind a controller button in the game's Settings → Controller).
+
+## Halo 3: ODST
+
+Project Reclaimer 0.9.19 and newer play Halo 3: ODST's campaign and Firefight, solo, in co-op and on ODST servers,
+once ODST's files are there. It's optional: tick **Halo 3: ODST** in the list of games when installing, or later open Tools
+→ **Installed games** → **Add**. Either way, it downloads ODST (about 9 GB) from your own Steam copy of MCC, with the same QR
+sign-in. Its **Repair** button checks ODST's files against Steam. Without it, joining an ODST game says to "Enable
+Halo 3: ODST in Steam", which on a Mac means Tools → **Installed games** → **Add**. **Remove** there
+deletes ODST's files again (about 9 GB back). Halo 3 can be removed the same way (about 13 GB back): Play then
+turns into **Install Halo 3…**, which lists both games to download again, with ODST still ticked if it's there
+(untick it to remove ODST too). In Terminal, run the install command with
+`RECLAIMER_ODST=1 ` in front of it (this also adds ODST to an existing install).
 
 Why mods need Steam: without the Steam client, the game downloads mods from the game servers, which cap sharing at
 ~2.5 MB/s each, or shows a "Start Steam…" error for Workshop-only mods. A helper next to the game fetches the same
@@ -112,6 +125,8 @@ To put back the tuned defaults, run the install command with `RECLAIMER_RESET_GR
 | Controller connected in Bluetooth, but the game ignores it | Turn the controller on before pressing Play. If the window shows **Controller: Your Mac's game controller service is stuck**, restart the Mac: macOS's controller service (`gamecontrollerd`) sometimes hangs, and then no app sees a controller until a restart. |
 | No sound, or sound from the wrong speakers | The game keeps the sound output your Mac had when you pressed Play (Wine's CoreAudio driver doesn't follow a later switch), so AirPods put in afterwards stay silent, and so does a muted output. The window shows **Sound: (output)** before Play, warns when that output is muted or a virtual device, and mentions Bluetooth headphones that are connected but not chosen. Already playing? Switch the Mac's sound back to the output the game started with (and un-mute it), or quit and press Play again. |
 | Voice chat: nobody hears you | The first time the game uses the microphone, macOS asks whether Project Reclaimer may use it: click **Allow**. If you clicked Don't Allow, turn it on in System Settings → Privacy & Security → Microphone. |
+| "This game is Halo 3: ODST, which isn't installed" | Tools → **Installed games** → **Add** next to Halo 3: ODST (about 9 GB). |
+| "This halo3odst.dll is not the ODST build this release supports" | Tools → **Installed games** → **Repair** next to Halo 3: ODST: it brings its files up to Steam's current version. |
 | Game frozen and won't close | Tools → **Force Quit**. |
 | Something else | Tools → **Make Report**, and send the zip it puts on your Desktop. Logs are in `~/Games/ProjectReclaimer/logs/`. |
 
@@ -123,7 +138,7 @@ Tools → **Uninstall** in the app. Or in Terminal:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main/uninstall.sh)"
 ```
 
-Removes the app, `~/Games/ProjectReclaimer` (game files, Wine, mods) and the network startup task.
+Removes the app, `~/Games/ProjectReclaimer` (Halo 3 and Halo 3: ODST's files, Wine, mods) and the network startup task.
 
 ## How it works (and why)
 

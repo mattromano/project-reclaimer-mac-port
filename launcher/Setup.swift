@@ -25,6 +25,9 @@ final class SetupModel: ObservableObject {
     @Published var remaining: String?
     @Published var qr: QRGrid?
     @Published var status: String?   // e.g. "Signed in to Steam. Getting the file list…"
+    @Published var offersODST = false  // only while the big download is still ahead
+    /// Also download Halo 3: ODST (~9 GB): Project Reclaimer 0.9.19+ plays its campaign and Firefight.
+    @Published var withODST = false { didSet { if withODST != oldValue { runChecks() } } }
     var installing: Bool { phase == .installing }
     private var awake: NSObjectProtocol?
 
@@ -33,7 +36,7 @@ final class SetupModel: ObservableObject {
     private var installer: LineProcess?
     private var lastError: String?
     private var started = false
-    static let neededGB = 45.0
+    var neededGB: Double { withODST ? 54 : 45 }
 
     init(upgrading: Bool) { self.upgrading = upgrading }
 
@@ -60,11 +63,12 @@ final class SetupModel: ObservableObject {
         let halo = home.appendingPathComponent(
             "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection/halo3/halo3.dll")
         let copying = ProcessInfo.processInfo.environment["RECLAIMER_MCC_FROM"] != nil  // (install.sh skips it too)
-        if !upgrading, !copying, !FileManager.default.fileExists(atPath: halo.path) {  // (no big download left otherwise)
+        offersODST = !upgrading && !copying && !FileManager.default.fileExists(atPath: halo.path)
+        if offersODST {  // (no big download left otherwise)
             let free = freeGigabytes()
-            list.append(Check(id: "disk", title: "Free disk space: \(Int(free)) GB", ok: free >= Self.neededGB,
-                              detail: free >= Self.neededGB ? "" :
-                                "Halo 3 needs about \(Int(Self.neededGB)) GB. Free up \(Int((Self.neededGB - free).rounded(.up))) GB (empty the Trash, delete big downloads), then press Check Again."))
+            list.append(Check(id: "disk", title: "Free disk space: \(Int(free)) GB", ok: free >= neededGB,
+                              detail: free >= neededGB ? "" :
+                                "\(withODST ? "Halo 3 and ODST need" : "Halo 3 needs") about \(Int(neededGB)) GB. Free up \(Int((neededGB - free).rounded(.up))) GB (empty the Trash, delete big downloads), then press Check Again."))
         }
         let tools = commandSucceeds("/usr/bin/xcode-select", ["-p"])
         needsDevTools = !tools
@@ -129,7 +133,7 @@ final class SetupModel: ObservableObject {
         qr = nil
         status = nil
         lastError = nil
-        log("installing")
+        log("installing\(withODST ? " with ODST" : "")")
         // a 35 GB download: the Mac must not fall asleep on it (the screen may)
         awake = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated],
                                                       reason: "Installing Project Reclaimer")
@@ -146,7 +150,7 @@ final class SetupModel: ObservableObject {
             f=${TMPDIR:-/tmp}/project-reclaimer-install.sh
             /usr/bin/curl -fsSL --connect-timeout 20 --speed-limit 1024 --speed-time 60 "$raw/install.sh" -o "$f" ||
               { echo "error: Couldn't download the installer. Check your internet connection and try again."; exit 1; }
-            RECLAIMER_REPO_RAW="$raw" RECLAIMER_GUI=1 exec /bin/bash "$f"
+            RECLAIMER_REPO_RAW="$raw" RECLAIMER_GUI=1 \(withODST && offersODST ? "RECLAIMER_ODST=1 " : "")exec /bin/bash "$f"
             """
         installer = LineProcess("/bin/bash", ["-c", bootstrap], onLine: { [self] line in
             switch SetupEvent(line: line) {
@@ -249,6 +253,12 @@ struct SetupView: View {
                         if m.waitingForDevTools { ProgressView().controlSize(.small) }
                     }
                 }
+                if m.offersODST {
+                    Divider()
+                    Text("Games to download").font(.headline)
+                    GameChecklist(halo3Size: "About 35 GB", odstSize: "About 9 GB more", odst: $m.withODST,
+                                  odstNote: "For ODST's campaign, Firefight and co-op. You can add it later in Tools too.")
+                }
                 if m.phase == .blocked {
                     Button("Check Again") { m.runChecks() }.disabled(m.waitingForDevTools)
                 }
@@ -260,7 +270,7 @@ struct SetupView: View {
             Label {
                 Text(m.upgrading
                      ? "Keeps your Halo 3 files, mods and settings. Takes a minute or two, and macOS may ask for your Mac password."
-                     : "You'll need the **Steam app on your phone** (you scan a code with it, to download Halo 3 from your own account) and your **Mac password**. The download is about 35 GB, so it can take a while: leave this window open (your Mac won't go to sleep meanwhile).")
+                     : "You'll need the **Steam app on your phone** (you scan a code with it, to download Halo 3 from your own account) and your **Mac password**. The download is about \(m.withODST ? 44 : 35) GB, so it can take a while: leave this window open (your Mac won't go to sleep meanwhile).")
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } icon: { Image(systemName: "info.circle.fill").foregroundStyle(accent) }

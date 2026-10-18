@@ -9,6 +9,18 @@ struct ModItem: Decodable, Identifiable, Equatable {
     let bytes: Int64
 }
 
+/// Halo 3 or Halo 3: ODST in the MCC folder, as tools.py `games` lists it.
+struct GameItem: Decodable, Identifiable, Equatable {
+    let id: String
+    let title: String
+    let installed: Bool
+    let bytes: Int64   // its own folder: what Remove frees (MCC's shared files belong to neither)
+    let path: String
+}
+
+let mccFolder = home.appendingPathComponent(
+    "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection")
+
 @MainActor
 final class ToolsModel: ObservableObject {
     @Published var busy: String?                    // the tool running now
@@ -20,7 +32,14 @@ final class ToolsModel: ObservableObject {
     @Published var repairQR: QRGrid?
     @Published var versions: GameVersions?
     @Published var showVersions = false
+    @Published var games: [GameItem] = [] { didSet { onGames?(games) } }
+    @Published var mccBytes: Int64 = 0              // the whole MCC folder, shared files included
+    @Published var downloading: String?             // the game(s) a Steam download is for, e.g. "halo3+odst"
+    var onGames: (([GameItem]) -> Void)?            // (the main window follows whether Halo 3 is there)
     private var running: LineProcess?
+
+    func game(_ id: String) -> GameItem? { games.first { $0.id == id } }
+    var odstInstalled: Bool { game("odst")?.installed ?? false }
 
     /// Run a tools.py command; `done` gets its last line.
     func run(_ title: String, _ args: [String], done: @escaping (String) -> Void = { _ in }) {
@@ -84,11 +103,76 @@ final class ToolsModel: ObservableObject {
         }
     }
 
-    func repair() {
+    /// Halo 3 and ODST with their sizes; `done` runs once the list is in (after an add or remove).
+    func loadGames(done: @escaping () -> Void = {}) {
+        run("Looking at your games…", ["games"]) { [self] line in
+            struct Listing: Decodable { let free_bytes: Int64; let mcc_bytes: Int64; let games: [GameItem] }
+            if let data = line.data(using: .utf8), let l = try? JSONDecoder().decode(Listing.self, from: data) {
+                games = l.games
+                freeBytes = l.free_bytes
+                mccBytes = l.mcc_bytes
+            }
+            result = nil
+            done()
+        }
+    }
+
+    private func titles(_ ids: [String]) -> String {
+        ids.map { game($0)?.title ?? ($0 == "odst" ? "Halo 3: ODST" : "Halo 3") }.joined(separator: " and ")
+    }
+
+    /// Download games from the player's Steam copy; `done` says whether they all arrived.
+    func addGames(_ ids: [String], done: @escaping (Bool) -> Void = { _ in }) {
+        let names = titles(ids)
+        steamDownload("Downloading \(names) from Steam…", ids.joined(separator: "+"), ["add-game"] + ids) { [self] last in
+            if result?.text == "Stopped." { return loadGames { [self] in say("Stopped.", ok: false); done(false) } }
+            let message = error(in: last) ?? "The download didn't finish. Try again to resume."
+            loadGames { [self] in
+                if succeeded(last), ids.allSatisfy({ game($0)?.installed == true }) {
+                    say(ids == ["odst"] ? "Halo 3: ODST is ready: Campaign and Firefight in the game's menu."
+                        : "\(names) \(ids.count > 1 ? "are" : "is") ready.")
+                    done(true)
+                } else { say(message, ok: false); done(false) }
+            }
+        }
+    }
+
+    func removeGame(_ g: GameItem, done: @escaping (Bool) -> Void = { _ in }) {
+        run("Removing \(g.title)…", ["remove-game", g.id]) { [self] last in
+            guard succeeded(last) else { say(error(in: last) ?? "\(g.title) couldn't be removed.", ok: false); return done(false) }
+            loadGames { [self] in
+                say(g.id == "halo3" ? "Halo 3 was removed. Press Install Halo 3 in the main window to play again."
+                    : "\(g.title) was removed. Add it again any time from here.")
+                done(true)
+            }
+        }
+    }
+
+    func repairGame(_ g: GameItem) {
+        steamDownload("Checking \(g.title)'s files against Steam…", g.id, ["repair-game", g.id]) { [self] last in
+            if succeeded(last) { say("\(g.title)'s files are all there and match Steam.") }
+            else if result?.text == "Stopped." { }
+            else { say(error(in: last) ?? "Repair didn't finish. Try it again.", ok: false) }
+        }
+    }
+
+    /// The install checklist's choice: Halo 3, and ODST kept, added or (unchecked while installed) removed.
+    func applySelection(odst: Bool, done: @escaping (Bool) -> Void) {
+        if let o = game("odst"), o.installed, !odst {
+            removeGame(o) { [self] ok in ok ? addGames(["halo3"], done: done) : done(false) }
+        } else {
+            addGames(odst && !odstInstalled ? ["halo3", "odst"] : ["halo3"], done: done)
+        }
+    }
+
+    /// A download from the player's Steam copy (Add, Repair), with the QR code when Steam wants a sign-in, and
+    /// progress with the time left.
+    private func steamDownload(_ title: String, _ which: String, _ args: [String], done: @escaping (String) -> Void) {
         var collector = QRCollector()
         var estimator = RateEstimator()
         repairProgress = nil
-        stream("Checking Halo 3's files against Steam…", ["repair"], onLine: { [self] line in
+        downloading = which
+        stream(title, args, onLine: { [self] line in
             switch SetupEvent(line: line) {
             case .steam(let e):
                 collector.handle(e)
@@ -103,9 +187,8 @@ final class ToolsModel: ObservableObject {
             repairQR = nil
             repairProgress = nil
             repairRemaining = nil
-            if succeeded(last) { say("Halo 3's files are all there and match Steam.") }
-            else if busy == nil, result?.text == "Stopped." { }
-            else { say(error(in: last) ?? "Repair didn't finish. Try it again.", ok: false) }
+            downloading = nil
+            done(last)
         })
     }
 }
@@ -117,10 +200,11 @@ struct ToolsSheet: View {
     @State private var confirm: Confirm?
 
     enum Confirm: Identifiable {
-        case removeMod(ModItem), resetGraphics, switchSteam, uninstall
+        case removeMod(ModItem), removeGame(GameItem), resetGraphics, switchSteam, uninstall
         var id: String {
             switch self {
             case .removeMod(let m): return "mod-\(m.id)"
+            case .removeGame(let g): return "game-\(g.id)"
             case .resetGraphics: return "graphics"
             case .switchSteam: return "steam"
             case .uninstall: return "uninstall"
@@ -164,16 +248,10 @@ struct ToolsSheet: View {
                                 } else { t.say(t.error(in: last) ?? "The game couldn't be stopped. Restart your Mac to close it.", ok: false) }
                             }
                         }
-                        tool("Repair game files", "Repair",
-                             "Checks Halo 3's files against Steam and downloads anything missing or damaged. Quit the game first.") {
-                            t.repair()
-                        }
-                        if t.repairQR != nil { SignInCard(qr: t.repairQR) }
-                        if let p = t.repairProgress {
-                            ProgressView(value: p).tint(accent)
-                            Text("\(Int(p * 100))%" + (t.repairRemaining.map { " · \($0)" } ?? ""))
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
+                    }
+                    section("Installed games") {
+                        ForEach(t.games) { game in gameRow(game) }
+                        if t.downloading != nil { DownloadProgress(t: t) }
                     }
                     section("Game version") {
                         Text(launcher.chosenVersion.map { "Playing Project Reclaimer \($0), an older version. Up-to-date servers need the newest." }
@@ -268,7 +346,7 @@ struct ToolsSheet: View {
                     }
                     section("Remove") {
                         tool("Uninstall Project Reclaimer", "Uninstall…",
-                             "Removes the app, Halo 3's files, mods and the network setting from this Mac. Your Steam account isn't affected.",
+                             "Removes the app, Halo 3 and Halo 3: ODST, mods and the network setting from this Mac. Your Steam account isn't affected.",
                              role: .destructive) {
                             confirm = .uninstall
                         }
@@ -280,12 +358,18 @@ struct ToolsSheet: View {
         .padding(22)
         .frame(width: 480)
 
-        .onAppear { if launcher.logging { t.loadMods() } }  // (not in --render-states snapshots)
+        .onAppear { if launcher.logging { t.loadGames { t.loadMods() } } }  // (not in --render-states snapshots)
         .alert(item: $confirm) { c in alert(for: c) }
     }
 
     private func alert(for c: Confirm) -> Alert {
         switch c {
+        case .removeGame(let game):
+            return Alert(title: Text("Remove \(game.title)?"),
+                         message: Text("Frees \(gigabytes(Double(game.bytes))). " + (game.id == "halo3"
+                             ? "Project Reclaimer can't start without it: Play turns into Install Halo 3 until you add it again (about a 13 GB download)."
+                             : "ODST's campaign, Firefight and ODST servers need it; you can add it again here (about a 9 GB download).")),
+                         primaryButton: .destructive(Text("Remove")) { t.removeGame(game) }, secondaryButton: .cancel())
         case .removeMod(let mod):
             return Alert(title: Text("Remove \(mod.title)?"),
                          message: Text("Frees \(gigabytes(Double(mod.bytes))). It downloads again if a server needs it."),
@@ -316,7 +400,7 @@ struct ToolsSheet: View {
                          }, secondaryButton: .cancel())
         case .uninstall:
             return Alert(title: Text("Uninstall Project Reclaimer?"),
-                         message: Text("This deletes Halo 3's files (about 35 GB), your downloaded mods and the app. The game closes if it's running, and macOS asks for your password to remove the network setting."),
+                         message: Text("This deletes \(uninstalledGames), your downloaded mods and the app. The game closes if it's running, and macOS asks for your password to remove the network setting."),
                          primaryButton: .destructive(Text("Uninstall")) {
                              t.run("Uninstalling…", ["uninstall"]) { last in
                                  guard t.succeeded(last) else {
@@ -332,6 +416,58 @@ struct ToolsSheet: View {
                              }
                          }, secondaryButton: .cancel())
         }
+    }
+
+    /// What Uninstall deletes, e.g. "Halo 3 and Halo 3: ODST (40.3 GB in all)" (MCC's shared files included).
+    private var uninstalledGames: String {
+        let installed = t.games.filter(\.installed).map(\.title)
+        guard !installed.isEmpty else { return t.games.isEmpty ? "Halo 3's files (about 35 GB)" : "the game files" }
+        return installed.joined(separator: " and ") + " (\(gigabytes(Double(t.mccBytes))) in all)"
+    }
+
+    /// One game: its size, then Add or Remove, Repair, and its folder in Finder.
+    private func gameRow(_ game: GameItem) -> some View {
+        let halo3 = game.id == "halo3"
+        let note = game.installed ? (halo3 ? "Campaign and multiplayer." : "Campaign, Firefight and ODST servers.")
+            : halo3 ? "About 13 GB from your Steam copy of MCC. Project Reclaimer needs it to start."
+            : "About 9 GB from your Steam copy of MCC, for ODST's campaign, Firefight and co-op."
+        let blocked = t.busy != nil || !launcher.update.finished || launcher.playing  // one at a time, never mid-update
+        let quitFirst = launcher.playing ? " Quit the game first." : ""
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(game.title).font(.callout.weight(.semibold))
+                    Text(game.installed ? gigabytes(Double(game.bytes)) : "Not installed")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                tip("Quit the game first: \(game.title) can't be added or removed while it's running.", disabled: blocked) {
+                    if game.installed {
+                        Button("Remove", role: .destructive) { confirm = .removeGame(game) }
+                    } else {
+                        Button("Add") { t.addGames([game.id]) }
+                    }
+                }
+                tip("Checks the game files against Steam and downloads anything missing or damaged." + quitFirst,
+                    disabled: blocked || !game.installed) {
+                    Button("Repair") { t.repairGame(game) }
+                }
+                tip("Open game directory.", disabled: !game.installed) {
+                    Button { NSWorkspace.shared.open(URL(fileURLWithPath: game.path)) } label: { Image(systemName: "folder") }
+                }
+            }
+            .controlSize(.large).fixedSize()
+        }
+    }
+
+    /// A button with a tooltip that also shows while it's greyed out: macOS gives a disabled button none, so a clear
+    /// layer on top takes the hover instead.
+    private func tip<B: View>(_ text: String, disabled: Bool, @ViewBuilder _ button: () -> B) -> some View {
+        button().disabled(disabled).help(text)
+            .overlay { if disabled { Color.clear.contentShape(Rectangle()).help(text) } }
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -355,5 +491,119 @@ struct ToolsSheet: View {
             Button(button, role: role, action: action).controlSize(.large).fixedSize()
                 .disabled(t.busy != nil || !launcher.update.finished)  // one at a time, and never mid-update
         }
+    }
+}
+
+/// The QR code when Steam wants a sign-in, then a game download's progress (Add, Repair, Install Halo 3).
+struct DownloadProgress: View {
+    @ObservedObject var t: ToolsModel
+
+    var body: some View {
+        if t.repairQR != nil { SignInCard(qr: t.repairQR) }
+        if let p = t.repairProgress {
+            ProgressView(value: p).tint(accent)
+            Text("\(Int(p * 100))%" + (t.repairRemaining.map { " · \($0)" } ?? ""))
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// The games to download, as checkboxes: Halo 3 always (Project Reclaimer needs it, so it can't be unchecked),
+/// ODST as the player likes. First install and Install Halo 3 both use it.
+struct GameChecklist: View {
+    let halo3Size: String
+    var odstSize = "About 9 GB"
+    @Binding var odst: Bool
+    var odstNote = "For ODST's campaign, Firefight and co-op."
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: .constant(true)) {
+                row("Halo 3", halo3Size, "Campaign and multiplayer. Project Reclaimer needs it.")
+            }
+            .disabled(true).help("Project Reclaimer needs Halo 3.")
+            Toggle(isOn: $odst) { row("Halo 3: ODST", odstSize, odstNote) }
+        }
+        .toggleStyle(.checkbox)
+    }
+
+    private func row(_ title: String, _ size: String, _ note: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(title).font(.headline)
+                Text(size).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Install Halo 3 (the main window's Play, once Halo 3 was removed in Tools): pick the games, then Continue
+/// downloads them. ODST starts checked when it's there; unchecking it removes its files.
+struct InstallGamesSheet: View {
+    @ObservedObject var m: Launcher
+    @ObservedObject var t: ToolsModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var odst = false
+    @State private var touched = false  // (until the player clicks, the box follows whether ODST is installed)
+
+    var body: some View {
+        let odstInstalled = t.odstInstalled
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Install Halo 3").font(.title2.bold())
+                Spacer()
+                Button("Cancel") {
+                    if t.busy != nil { t.cancel() }
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            Text("Choose the games to download from your Steam copy of MCC. Halo 3 is needed to play.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            GameChecklist(halo3Size: "About 13 GB",
+                          odstSize: odstInstalled ? "Installed, \(gigabytes(Double(t.game("odst")?.bytes ?? 0)))" : "About 9 GB",
+                          odst: Binding(get: { odst }, set: { odst = $0; touched = true }),
+                          odstNote: odstInstalled && !odst ? "Its files will be removed, freeing \(gigabytes(Double(t.game("odst")?.bytes ?? 0)))."
+                              : odstInstalled ? "Keeps ODST's campaign, Firefight and co-op. Uncheck to remove its files."
+                              : "For ODST's campaign, Firefight and co-op.")
+                .disabled(t.busy != nil)
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
+            Text("\(gigabytes(Double(t.freeBytes))) free on this Mac.").font(.callout).foregroundStyle(.secondary)
+            if let busy = t.busy {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text(busy).font(.callout)
+                    Spacer()
+                    Button("Stop") { t.cancel() }
+                }
+            }
+            DownloadProgress(t: t)
+            if let r = t.result, !r.ok {
+                Label(r.text, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            Button {
+                t.applySelection(odst: odst) { ok in
+                    guard ok else { return }  // (the sheet stays open: Continue resumes)
+                    m.notice = t.result?.text
+                    dismiss()
+                }
+            } label: {
+                Label("Continue", systemImage: "arrow.down.circle.fill")
+            }
+            .buttonStyle(PlayButtonStyle())
+            .keyboardShortcut(.defaultAction)
+            .disabled(t.busy != nil || m.playing)
+        }
+        .padding(22)
+        .frame(width: 440)
+        .onAppear {
+            odst = t.odstInstalled
+            if m.logging { t.loadGames() }  // (not in --render-states snapshots)
+        }
+        .onChange(of: t.games) { if !touched { odst = t.odstInstalled } }
     }
 }

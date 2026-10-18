@@ -47,6 +47,8 @@ Steam, the Steam app on your phone, ~45 GB free disk space, and your Mac passwor
    Open Anyway). You only do this once.
 2. The Project Reclaimer window checks your Mac and installs everything. When it shows a QR code,
    scan it with the Steam app on your phone: Halo 3 (~35 GB) downloads from your own Steam account.
+   Tick "Also download Halo 3: ODST" first for ODST's campaign and Firefight (~9 GB more, ~54 GB free
+   in all); you can also add it later from the Tools button.
    macOS asks for your Mac password once.
 3. When it's done, it opens Project Reclaimer from your Applications folder: press Play. You can eject
    this disk image and move it to the Trash.

@@ -156,6 +156,8 @@ struct HelpPanel: View {
          "That server didn't answer the join. Usually it runs an older Project Reclaimer (its card says \u{201C}This server runs an older version\u{201D}) or its port isn't open. This window asks the server which version it runs and offers to switch and rejoin when that's the problem; otherwise pick another server. If every server says this, quit the game and open Project Reclaimer again: it checks your Mac's network setup."),
         ("Steam Workshop's version of a mod differs from the server's",
          "The server uses an older copy of a mod than Steam has. Only the server's owner can fix it by updating the mod. Pick another server."),
+        ("This game is Halo 3: ODST, which isn't installed. Enable Halo 3: ODST in Steam…",
+         "On a Mac there's no Steam to enable it in: open Tools (the gear button) and, under Installed games, press Add next to Halo 3: ODST. It downloads ODST (about 9 GB) from your Steam copy of MCC. Then ODST's games join, and Campaign and Firefight in the game's menu have ODST too."),
         ("Could not join that server (every server)",
          "Quit the game and open Project Reclaimer again: it installs any fix it needs (it may ask for your Mac password)."),
         ("Stuck on Synchronizing players",
@@ -285,21 +287,25 @@ struct ContentView: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
-            Button(action: m.play) {
-                Label(playLabel, systemImage: m.playing ? "gamecontroller.fill" : "play.fill")
+            Button(action: installing ? { m.showInstallGames = true } : m.play) {
+                Label(playLabel, systemImage: m.playing ? "gamecontroller.fill" : installing ? "arrow.down.circle.fill" : "play.fill")
             }
             .buttonStyle(PlayButtonStyle())
             .keyboardShortcut(.defaultAction)
             .disabled(!m.ready)
+            .sheet(isPresented: $m.showInstallGames) { InstallGamesSheet(m: m, t: m.tools) }
         }
         .padding(24)
         .frame(width: 480)
         .sheet(isPresented: $m.showTools) { ToolsSheet(launcher: m, t: m.tools) }
     }
 
+    /// Halo 3 was removed in Tools: the Play button installs it instead.
+    private var installing: Bool { m.halo3Missing && !m.playing }
+
     private var playLabel: String {
         if m.playing { return "Playing" }
-        if m.ready { return "Play" }
+        if m.ready { return installing ? "Install Halo 3…" : "Play" }
         if m.signingIn { return "Scan the code above to continue" }
         if case .failed = m.steam { return "Try again or skip Steam above" }
         return "Getting ready…"

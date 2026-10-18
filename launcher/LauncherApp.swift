@@ -291,6 +291,7 @@ func renderStates(to dir: URL) {
                         Check(id: "tools", title: "Apple's developer tools", ok: true, detail: ""),
                         Check(id: "rosetta", title: "Rosetta (Apple's Intel translator)", ok: nil,
                               detail: "Installed during setup; macOS asks for your password.")]
+            s.offersODST = true
             s.phase = .ready
         }),
         ("21-setup-blocked", false, { s in
@@ -348,7 +349,27 @@ func renderStates(to dir: URL) {
                     ModItem(id: "2", title: "Warlock", bytes: 1_600_000_000),
                     ModItem(id: "3", title: "Halo 3 Foundation", bytes: 337_000_000)]
     m.tools.say("The report is on your Desktop: Project Reclaimer report 2026-10-10 12.31.zip")
+    let h3 = GameItem(id: "halo3", title: "Halo 3", installed: true, bytes: 13_100_000_000, path: "/Users/player/Games/ProjectReclaimer/prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection/halo3")
+    let odst = GameItem(id: "odst", title: "Halo 3: ODST", installed: true, bytes: 8_700_000_000, path: "/Users/player/Games/ProjectReclaimer/prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection/halo3odst")
+    m.tools.games = [h3, odst]
+    m.tools.mccBytes = 39_600_000_000
     snapshot(ToolsSheet(launcher: m, t: m.tools), name: "30-tools", to: dir)
+    m.tools.games = [h3, GameItem(id: "odst", title: "Halo 3: ODST", installed: false, bytes: 0, path: odst.path)]
+    m.tools.result = nil
+    snapshot(ToolsSheet(launcher: m, t: m.tools), name: "30-tools-no-odst", to: dir)
+
+    // Halo 3 removed in Tools (ODST kept): Tools, the main window's Install Halo 3, and its game checklist
+    let r = Launcher()
+    r.logging = false
+    r.update = .done("Up to date"); r.steam = .done("Signed in as player123")
+    r.halo3Missing = true
+    r.tools.freeBytes = 54_000_000_000
+    r.tools.games = [GameItem(id: "halo3", title: "Halo 3", installed: false, bytes: 0, path: h3.path), odst]
+    r.tools.say("Halo 3 was removed. Press Install Halo 3 in the main window to play again.")
+    snapshot(ToolsSheet(launcher: r, t: r.tools), name: "30-tools-no-halo3", to: dir)
+    r.tools.result = nil
+    snapshot(ContentView(m: r), name: "35-install-halo3", to: dir)
+    snapshot(InstallGamesSheet(m: r, t: r.tools), name: "36-install-halo3-games", to: dir)
 
     // an older version chosen: the main window, and Tools with the version list open
     let v = Launcher()

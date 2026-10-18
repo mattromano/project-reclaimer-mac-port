@@ -38,6 +38,9 @@ final class Launcher: ObservableObject {
     @Published var sound: Step? { didSet { if sound != oldValue, let s = sound { log("sound: \(s)") } } }
     @Published var notice: String?   // a plain-language note, e.g. after Tools stopped the game
     @Published var showTools = false
+    /// Halo 3 was removed in Tools: Play turns into Install Halo 3, which opens the game checklist.
+    @Published var halo3Missing = !FileManager.default.fileExists(atPath: mccFolder.appendingPathComponent("halo3/halo3.dll").path)
+    @Published var showInstallGames = false
     /// An older Project Reclaimer the player chose for servers that haven't updated (nil: the newest).
     @Published var chosenVersion: String? { didSet { if chosenVersion != oldValue { log("chosen version: \(chosenVersion ?? "newest")") } } }
     let tools = ToolsModel()
@@ -113,6 +116,9 @@ final class Launcher: ObservableObject {
     func start() {
         guard !didStart else { return }
         didStart = true
+        tools.onGames = { [weak self] games in
+            if let h = games.first(where: { $0.id == "halo3" }) { self?.halo3Missing = !h.installed }
+        }
         log("started (home \(home.path))")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             MainActor.assumeIsolated { self.tick() }
@@ -442,7 +448,7 @@ final class Launcher: ObservableObject {
     /// The game ended: if its log shows a crash, say what happened and stay open for Play again; otherwise close
     /// (or, within seconds of Play, say it closed right away). Never while Tools is open: macOS refuses to quit
     /// with a sheet open (and beeps each time), then quit as soon as Done closed it, mid-way through what the
-    /// player was doing there (a repair download, say). The window stays, ready to Play again.
+    /// player was doing there (an ODST download, say). The window stays, ready to Play again.
     private func gameEnded(early: Bool) {
         guard !checkingCrash else { return }
         checkingCrash = true

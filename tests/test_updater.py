@@ -162,6 +162,20 @@ class UpdaterTest(unittest.TestCase):
         self.assertIn("relaunch", out)
         self.assertEqual((self.home / "version").read_text().strip(), "1.2.0")
 
+    def test_port_update_finishes_when_the_window_closes(self):
+        # 1.3.1's update died halfway with BrokenPipeError when the window was closed a second after it started
+        (self.home / "game" / "project-reclaimer-v0.9.12.exe").write_bytes(NEW_EXE)
+        (self.raw / "VERSION").write_text("1.2.0\n")
+        (self.raw / "VERSION.new").write_text("1.2.0\n")
+        p = subprocess.Popen([sys.executable, "-I", str(UPDATER), "run"], env=self.env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        self.assertEqual(p.stdout.readline().strip(), "status: Checking for updates…")
+        p.stdout.close()  # the window quits
+        _, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual((self.home / "version").read_text().strip(), "1.2.0")
+
     def test_after_a_port_update_the_new_installer_owns_the_game_update(self):
         # the new install.sh updates the game with the new updater.py; this (old) process must not try again with
         # its old code: in 1.2.1 that printed "no game client" for 0.9.18 just after the fix had installed it

@@ -126,6 +126,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Closing the window mid-install stops it: say so first (Try Again picks up where it stopped).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
+            if case .working(let s) = launcher?.update, s.hasPrefix("Updating the Mac port") {
+                let alert = NSAlert()
+                alert.messageText = "Quit while updating?"
+                alert.informativeText = "The update carries on in the background. Opening Project Reclaimer again waits for it to finish."
+                alert.addButton(withTitle: "Keep Open")
+                alert.addButton(withTitle: "Quit")
+                return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+            }
             guard setup?.installing == true else { return .terminateNow }
             let alert = NSAlert()
             alert.messageText = "Stop installing?"

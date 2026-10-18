@@ -54,7 +54,13 @@ class Offline(Exception):
 
 
 def say(line):
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except BrokenPipeError:
+        # the window closed: finish the update anyway (stopping halfway left a half-updated install), quietly
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
 
 
 def fetch(url, timeout=20):

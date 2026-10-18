@@ -206,6 +206,8 @@ if [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ] && [ -z "$U
   fi
 elif [ -f "$MCC_DIR/halo3/halo3.dll" ] && [ -d "$MCC_DIR/halo3/maps" ]; then
   note "already installed"
+elif [ -n "$UPDATE" ] && [ -f "$BASE/halo3-removed" ]; then
+  note "Halo 3 was removed in Tools; add it again from the launcher (Play > Install Halo 3)."
 elif [ -n "$UPDATE" ]; then
   die "Halo 3's game files are missing. Open the Project Reclaimer disk image and run the installer again."
 elif [ -n "${RECLAIMER_MCC_FROM:-}" ]; then

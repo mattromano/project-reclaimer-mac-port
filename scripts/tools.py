@@ -13,7 +13,12 @@
   report             zip the logs and versions (no Steam account name) to the Desktop: "ok <path>"
   reset-graphics     put back the tuned graphics settings
   forget-steam       forget the saved Steam account (the window then shows a QR code)
-  repair             re-check Halo 3's files against Steam (QR codes and progress as workshop_helper game-download)
+  games              JSON: Halo 3 and Halo 3: ODST (installed or not, size, folder), MCC's size and free disk space
+  add-game <id>...   download games (halo3, odst) from the player's Steam copy (QR codes and progress as
+                     workshop_helper game-download)
+  repair-game <id>   re-check one installed game's files against Steam, the same way
+  repair             the same for every installed game
+  remove-game <id>   delete one game's files (MCC's shared files stay)
   uninstall          remove the app, the install folder and the network startup task
   server-version <host:port>   "<version> <name>" of the Project Reclaimer a server runs, or "unreachable"
   join <host:port>   join a server in the running game (hands it a join link, as a link in a browser would)
@@ -321,10 +326,76 @@ def forget_steam():
     return "ok"
 
 
-def repair():
+# id: (title, folder in MCC_DIR, its depots). Each game's depots write only into its folder; MCC's shared files
+# (BASE_DEPOT: MCC/, Data/, Engine/) come with either and stay when one is removed.
+GAMES = {"halo3": ("Halo 3", "halo3", ["976738", "976739"]),  # Halo 3, its multiplayer
+         "odst": ("Halo 3: ODST", "halo3odst", ["1064222"])}
+GAME_DLL = {"halo3": "halo3/halo3.dll", "odst": "halo3odst/halo3odst.dll"}
+BASE_DEPOT = "976731"
+HALO3_REMOVED = BASE / "halo3-removed"  # (Halo 3 was removed in Tools on purpose: updates leave it be)
+
+
+def game_installed(gid):
+    return (MCC_DIR / GAME_DLL[gid]).is_file()
+
+
+def download_games(ids):
     if game_running():
         return "error: Quit the game first."
-    return helper().game_download(str(MCC_DIR))
+    depots = [BASE_DEPOT] + [d for gid in ids for d in GAMES[gid][2]]
+    return helper().game_download(str(MCC_DIR), depots)
+
+
+def repair():
+    """Check every installed game against Steam (Halo 3's depots when nothing is installed)."""
+    return download_games([gid for gid in GAMES if game_installed(gid)] or ["halo3"])
+
+
+def repair_game(gid):
+    if gid not in GAMES:
+        return "error: That isn't a game Project Reclaimer plays."
+    if game_running():
+        return "error: Quit the game first."
+    if not game_installed(gid):
+        return f"error: {GAMES[gid][0]} isn't installed. Add it first."
+    return download_games([gid])
+
+
+def add_games(ids):
+    if not ids or any(gid not in GAMES for gid in ids):
+        return "error: That isn't a game Project Reclaimer plays."
+    result = download_games(ids)
+    if result == "ok" and "halo3" in ids:
+        HALO3_REMOVED.unlink(missing_ok=True)
+    return result
+
+
+def games():
+    items = []
+    for gid, (title, folder, _) in GAMES.items():
+        path = MCC_DIR / folder
+        items.append({"id": gid, "title": title, "installed": game_installed(gid), "path": str(path),
+                      "bytes": folder_size(path) if path.is_dir() else 0})  # (what Remove frees)
+    return json.dumps({"free_bytes": shutil.disk_usage(BASE).free, "games": items,
+                       "mcc_bytes": folder_size(MCC_DIR) if MCC_DIR.is_dir() else 0})
+
+
+def remove_game(gid):
+    if gid not in GAMES:
+        return "error: That isn't a game Project Reclaimer plays."
+    title, folder, depots = GAMES[gid]
+    if game_running():
+        return "error: Quit the game first."
+    if not (MCC_DIR / folder).is_dir():
+        return f"error: {title} isn't installed."
+    if gid == "halo3":
+        HALO3_REMOVED.write_text("")
+    shutil.rmtree(MCC_DIR / folder)
+    # DepotDownloader's record of the depots, so adding the game again downloads it all
+    for depot in depots:
+        for f in (MCC_DIR / ".DepotDownloader").glob(depot + "_*.manifest*"):
+            f.unlink(missing_ok=True)
+    return "ok"
 
 
 ADDRESS = re.compile(r"[A-Za-z0-9.-]+:\d{1,5}")
@@ -411,13 +482,19 @@ def uninstall():
 COMMANDS = {"net-check": net_check, "net-fix": net_fix, "controller-check": controller_check,
             "audio-check": audio_check, "crash-check": crash_check, "force-quit": force_quit, "mods": mods,
             "report": report, "reset-graphics": reset_graphics, "forget-steam": forget_steam, "repair": repair,
-            "uninstall": uninstall}
+            "games": games, "uninstall": uninstall}
 
 
 def main(argv):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     if len(argv) == 3 and argv[1] == "remove-mod":
         result = remove_mod(argv[2])
+    elif len(argv) == 3 and argv[1] == "remove-game":
+        result = remove_game(argv[2])
+    elif len(argv) == 3 and argv[1] == "repair-game":
+        result = repair_game(argv[2])
+    elif len(argv) >= 3 and argv[1] == "add-game":
+        result = add_games(argv[2:])
     elif len(argv) == 3 and argv[1] == "server-version":
         result = server_version(argv[2])
     elif len(argv) == 3 and argv[1] == "join":

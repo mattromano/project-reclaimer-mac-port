@@ -274,9 +274,101 @@ class ToolsTest(unittest.TestCase):
                                  "project-reclaimer-v9.9.99.exe game-client"])
         try:
             self.assertEqual(self.run_tool("repair")[1][-1], "error: Quit the game first.")
+            for args in (["add-game", "odst"], ["remove-game", "odst"], ["repair-game", "halo3"]):
+                self.assertEqual(self.run_tool(*args)[1][-1], "error: Quit the game first.", args)
             self.assertEqual(self.run_tool("reset-graphics")[1][-1], "error: Quit the game first.")
         finally:
             game.kill()
+
+    def fake_mcc(self, odst=True, halo3=True):
+        mcc = self.home / "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection"
+        (mcc / "MCC").mkdir(parents=True)
+        (mcc / "MCC" / "shared.pak").write_bytes(b"x" * 500)
+        (mcc / ".DepotDownloader").mkdir()
+        (mcc / ".DepotDownloader" / "976731_1.manifest").write_bytes(b"m")
+        if halo3:
+            (mcc / "halo3").mkdir()
+            (mcc / "halo3" / "halo3.dll").write_bytes(b"x" * 3000)
+            for depot in ("976738_2", "976739_3"):
+                (mcc / ".DepotDownloader" / f"{depot}.manifest").write_bytes(b"m")
+        if odst:
+            (mcc / "halo3odst").mkdir()
+            (mcc / "halo3odst" / "halo3odst.dll").write_bytes(b"x" * 1000)
+            (mcc / ".DepotDownloader" / "1064222_4.manifest").write_bytes(b"m")
+            (mcc / ".DepotDownloader" / "1064222_4.manifest.sha").write_bytes(b"s")
+        return mcc
+
+    def test_games_lists_halo3_and_odst_with_sizes_and_folders(self):
+        mcc = self.fake_mcc()
+        data = json.loads(self.run_tool("games")[1][-1])
+        self.assertGreater(data["free_bytes"], 0)
+        self.assertGreaterEqual(data["mcc_bytes"], 4500)  # (everything in the MCC folder)
+        halo3, odst = data["games"]
+        self.assertEqual((halo3["id"], halo3["installed"], halo3["bytes"], halo3["path"]),
+                         ("halo3", True, 3000, str(mcc / "halo3")))  # (MCC's shared files belong to neither)
+        self.assertEqual((odst["id"], odst["installed"], odst["bytes"], odst["path"]),
+                         ("odst", True, 1000, str(mcc / "halo3odst")))
+
+    def test_games_without_odst(self):
+        self.fake_mcc(odst=False)
+        halo3, odst = json.loads(self.run_tool("games")[1][-1])["games"]
+        self.assertTrue(halo3["installed"])
+        self.assertEqual((odst["installed"], odst["bytes"]), (False, 0))
+
+    def manifests(self, mcc):
+        return sorted(f.name for f in (mcc / ".DepotDownloader").iterdir())
+
+    def test_remove_odst_deletes_only_odst(self):
+        mcc = self.fake_mcc()
+        self.assertEqual(self.run_tool("remove-game", "odst")[1][-1], "ok")
+        self.assertFalse((mcc / "halo3odst").exists())
+        self.assertTrue((mcc / "halo3" / "halo3.dll").exists())
+        self.assertEqual(self.manifests(mcc), ["976731_1.manifest", "976738_2.manifest", "976739_3.manifest"])
+        self.assertFalse((self.home / "halo3-removed").exists())
+
+    def test_remove_halo3_keeps_odst_and_mccs_shared_files(self):
+        mcc = self.fake_mcc()
+        self.assertEqual(self.run_tool("remove-game", "halo3")[1][-1], "ok")
+        self.assertFalse((mcc / "halo3").exists())
+        self.assertTrue((mcc / "halo3odst" / "halo3odst.dll").exists())
+        self.assertTrue((mcc / "MCC" / "shared.pak").exists())
+        self.assertEqual(self.manifests(mcc), ["1064222_4.manifest", "1064222_4.manifest.sha", "976731_1.manifest"])
+        self.assertTrue((self.home / "halo3-removed").exists())  # (so Mac port updates don't stop on it)
+
+    def test_remove_a_game_that_isnt_installed_or_isnt_a_game(self):
+        self.fake_mcc(odst=False)
+        self.assertEqual(self.run_tool("remove-game", "odst"), (1, ["error: Halo 3: ODST isn't installed."]))
+        self.assertEqual(self.run_tool("remove-game", "../halo3")[1][-1], "error: That isn't a game Project Reclaimer plays.")
+
+    def test_add_games_downloads_mcc_and_the_chosen_games(self):
+        self.fake_mcc(halo3=False, odst=False)
+        (self.home / "halo3-removed").write_text("")
+        tools = self.load()
+        with mock.patch.object(tools.helper(), "game_download", return_value="ok") as download:
+            self.assertEqual(tools.add_games(["odst"]), "ok")
+            download.assert_called_with(str(tools.MCC_DIR), ["976731", "1064222"])
+            self.assertTrue((self.home / "halo3-removed").exists())
+            self.assertEqual(tools.add_games(["halo3", "odst"]), "ok")
+            download.assert_called_with(str(tools.MCC_DIR), ["976731", "976738", "976739", "1064222"])
+        self.assertFalse((self.home / "halo3-removed").exists())
+
+    def test_a_failed_halo3_download_keeps_the_removed_marker(self):
+        self.fake_mcc(halo3=False)
+        (self.home / "halo3-removed").write_text("")
+        tools = self.load()
+        with mock.patch.object(tools.helper(), "game_download", return_value="error: Couldn't reach Steam."):
+            self.assertEqual(tools.add_games(["halo3"]), "error: Couldn't reach Steam.")
+        self.assertTrue((self.home / "halo3-removed").exists())
+
+    def test_repair_checks_one_installed_game(self):
+        self.fake_mcc(halo3=False)
+        tools = self.load()
+        with mock.patch.object(tools.helper(), "game_download", return_value="ok") as download:
+            self.assertEqual(tools.repair_game("odst"), "ok")
+            download.assert_called_once_with(str(tools.MCC_DIR), ["976731", "1064222"])
+            self.assertEqual(tools.repair_game("halo3"), "error: Halo 3 isn't installed. Add it first.")
+            self.assertEqual(tools.repair(), "ok")  # (every installed game: here only ODST)
+            download.assert_called_with(str(tools.MCC_DIR), ["976731", "1064222"])
 
     # ---- server versions and rejoining ----
     def fake_wine(self, script):
@@ -376,6 +468,18 @@ class ToolsTest(unittest.TestCase):
         admin = [l for l in out if l.startswith("dry-run admin: ")]
         self.assertEqual(len(admin), 1)
         self.assertIn("launchctl bootout system/local.projectreclaimer.loopback", admin[0])
+
+    def test_uninstall_removes_every_game(self):
+        for halo3 in (True, False):  # (also once Halo 3 was removed in Tools and only ODST is left)
+            with self.subTest(halo3=halo3):
+                self.setUp()
+                mcc = self.fake_mcc(halo3=halo3)
+                self.assertEqual(self.run_tool("uninstall")[1][-1], "ok")
+                self.assertFalse((mcc / "halo3").exists())
+                self.assertFalse((mcc / "halo3odst").exists())
+                self.assertFalse(self.home.exists())
+                self.tearDown()
+        self.setUp()  # (for the tearDown that follows)
 
     def test_uninstall_only_stops_this_installs_helpers(self):
         # e.g. another install's QR sign-in: the reviewer's test run once killed a live sign-in this way

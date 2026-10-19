@@ -332,6 +332,7 @@ GAMES = {"halo3": ("Halo 3", "halo3", ["976738", "976739"]),  # Halo 3, its mult
          "odst": ("Halo 3: ODST", "halo3odst", ["1064222"])}
 GAME_DLL = {"halo3": "halo3/halo3.dll", "odst": "halo3odst/halo3odst.dll"}
 BASE_DEPOT = "976731"
+GAME_GB = {"halo3": 36, "odst": 9}  # roughly what each download takes on disk, MCC's shared files included in Halo 3's
 HALO3_REMOVED = BASE / "halo3-removed"  # (Halo 3 was removed in Tools on purpose: updates leave it be)
 
 
@@ -364,6 +365,11 @@ def repair_game(gid):
 def add_games(ids):
     if not ids or any(gid not in GAMES for gid in ids):
         return "error: That isn't a game Project Reclaimer plays."
+    need = sum(GAME_GB[gid] for gid in ids if not game_installed(gid)) + 2  # (+2 GB to spare)
+    free = shutil.disk_usage(BASE).free / 1e9
+    if free < need:
+        return (f"error: That needs about {need} GB free, and your Mac has {free:.0f} GB. Free up some space "
+                "(Tools > Mods and disk space can remove downloaded mods), then try again.")
     result = download_games(ids)
     if result == "ok" and "halo3" in ids:
         HALO3_REMOVED.unlink(missing_ok=True)
@@ -390,7 +396,10 @@ def remove_game(gid):
         return f"error: {title} isn't installed."
     if gid == "halo3":
         HALO3_REMOVED.write_text("")
-    shutil.rmtree(MCC_DIR / folder)
+    try:
+        shutil.rmtree(MCC_DIR / folder)
+    except OSError as e:
+        return f"error: {title}'s folder couldn't be removed ({e.strerror or e}). Is it on another disk or in use?"
     # DepotDownloader's record of the depots, so adding the game again downloads it all
     for depot in depots:
         for f in (MCC_DIR / ".DepotDownloader").glob(depot + "_*.manifest*"):

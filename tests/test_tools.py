@@ -352,6 +352,29 @@ class ToolsTest(unittest.TestCase):
             download.assert_called_with(str(tools.MCC_DIR), ["976731", "976738", "976739", "1064222"])
         self.assertFalse((self.home / "halo3-removed").exists())
 
+    def test_add_games_needs_room_for_them(self):
+        # a full disk used to end as a DepotDownloader error part-way through ~9 GB
+        self.fake_mcc(odst=False)
+        tools = self.load()
+        with mock.patch.object(tools.helper(), "game_download", return_value="ok") as download, \
+                mock.patch.object(tools.shutil, "disk_usage", return_value=mock.Mock(free=5 * 10**9)):
+            result = tools.add_games(["odst"])
+        self.assertTrue(result.startswith("error: ") and "GB" in result, result)
+        download.assert_not_called()
+        with mock.patch.object(tools.helper(), "game_download", return_value="ok"), \
+                mock.patch.object(tools.shutil, "disk_usage", return_value=mock.Mock(free=50 * 10**9)):
+            self.assertEqual(tools.add_games(["odst"]), "ok")
+
+    def test_remove_game_explains_a_folder_it_cant_delete(self):
+        mcc = self.fake_mcc()
+        elsewhere = self.tmp / "elsewhere"
+        shutil.move(str(mcc / "halo3odst"), elsewhere)
+        (mcc / "halo3odst").symlink_to(elsewhere)  # (rmtree refuses symlinks: an error line, not a traceback)
+        rc, out = self.run_tool("remove-game", "odst")
+        self.assertEqual(rc, 1)
+        self.assertTrue(out[-1].startswith("error: "), out)
+        self.assertTrue((elsewhere / "halo3odst.dll").exists())
+
     def test_a_failed_halo3_download_keeps_the_removed_marker(self):
         self.fake_mcc(halo3=False)
         (self.home / "halo3-removed").write_text("")

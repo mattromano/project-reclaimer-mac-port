@@ -18,6 +18,9 @@ export LP_NUM_THREADS=${LP_NUM_THREADS:-0}
 OVERRIDES="opengl32=n,b;xaudio2_9=d"
 
 export WINEPREFIX="$BASE/prefix-wine"
+# ~/.zshenv may inject an ARM shim (e.g. libnomallocstacklogging) into every zsh: this script is #!/bin/zsh,
+# but Wine runs as an x86_64 (Rosetta) binary that cannot load ARM dylibs and crashes at launch.
+unset DYLD_INSERT_LIBRARIES
 WINE="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin/wine"
 # DXVK-macOS d3d11/d3d10core in this prefix's system32 (Wine's own D3D11 cannot create a device on MoltenVK).
 # d3d11.dll there is spinfix, which forwards to DXVK (d3d11_dxvk.dll) and makes Halo 3's engine thread sleep instead

@@ -412,8 +412,11 @@ ADDRESS = re.compile(r"[A-Za-z0-9.-]+:\d{1,5}")
 
 def game_env():
     """Wine settings as run.sh uses them, for asking the game something without opening it."""
-    return dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), WINEDEBUG="-all", MVK_CONFIG_LOG_LEVEL="0",
-                WINEDLLOVERRIDES="opengl32=n,b;xaudio2_9=d;d3d11,d3d10core=n,b")
+    env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), WINEDEBUG="-all", MVK_CONFIG_LOG_LEVEL="0",
+               WINEDLLOVERRIDES="opengl32=n,b;xaudio2_9=d;d3d11,d3d10core=n,b")
+    # ~/.zshenv may inject an arm64 DYLD shim (libnomallocstacklogging) globally; Wine runs as an x86_64/Rosetta binary.
+    env.pop("DYLD_INSERT_LIBRARIES", None)
+    return env
 
 
 WINE = BASE / "wine" / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"

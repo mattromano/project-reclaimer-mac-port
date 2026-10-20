@@ -73,6 +73,7 @@ final class Launcher: ObservableObject {
     private var steamSkipped = false                // the player chose Skip: don't ask again this session
     private var helperRunning = false
     private var gameGoneSince: Date?
+    private var windowless = WindowlessGame()  // a game that quit but left Wine running
     private var timer: Timer?
     private var ticks = 0
     private var didStart = false
@@ -348,6 +349,7 @@ final class Launcher: ObservableObject {
         playing = true
         playedAt = Date()
         gameGoneSince = nil
+        windowless = WindowlessGame()
         game = LineProcess("/bin/zsh", [gameDir.appendingPathComponent("launch.sh").path],
                            onLine: { _ in }, onExit: { _ in })
         if game == nil { gameStopped(early: true) }
@@ -378,6 +380,17 @@ final class Launcher: ObservableObject {
             if error != nil { update = previous }
             done(error)
         }))
+    }
+
+    /// This launch's log says the game stopped its runtime (the player quit it). Only the end of the log is read.
+    private func gameSaidRuntimeStopped() -> Bool {
+        let url = home.appendingPathComponent("logs/client-wine.log")
+        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? h.close() }
+        let end = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: end > 65_536 ? end - 65_536 : 0)
+        let tail = String(decoding: (try? h.readToEnd()) ?? Data(), as: UTF8.self)
+        return tail.contains("Local runtime stopped")
     }
 
     private func gameReachedMenu() -> Bool {
@@ -453,6 +466,12 @@ final class Launcher: ObservableObject {
     private func gameEnded(early: Bool) {
         guard !checkingCrash else { return }
         checkingCrash = true
+        // first whatever the game left running under Wine (its engine worker can outlive it, spinning a CPU core)
+        let stop = python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in checkCrash(early: early) })
+        if let stop { keep(stop) } else { checkCrash(early: early) }
+    }
+
+    private func checkCrash(early: Bool) {
         var crash: String?
         let check = python("tools.py", ["crash-check"], onLine: { line in
             if line.hasPrefix("crash: ") { crash = String(line.dropFirst(7)) }
@@ -532,6 +551,15 @@ final class Launcher: ObservableObject {
         guard ticks % 2 == 0 else { return }
         processRunning(#"workshop_helper\.py (watch|get)"#) { [self] in helperRunning = $0 }
         guard playing else { return }
+        // the game quit but Wine kept it running with no window (see WindowlessGame): it's over, so stop it
+        let stopped = windowless.goneSince != nil && gameSaidRuntimeStopped()
+        if !checkingCrash, windowless.isOver(windows: wineWindows(wineDir: home.appendingPathComponent("wine")),
+                                             stopped: stopped) {
+            log("the game's window has been gone for \(Int(stopped ? WindowlessGame.grace : WindowlessGame.longGrace)) s"
+                + "\(stopped ? " after it said its runtime stopped" : ""), but it is still running: stopping it")
+            windowless = WindowlessGame()
+            return gameEnded(early: false)
+        }
         processRunning(gameProcess) { [self] gameUp in
             guard playing else { return }
             if game?.isRunning == true || gameUp {

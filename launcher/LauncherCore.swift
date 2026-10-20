@@ -1,5 +1,6 @@
 // LauncherCore: everything the launcher window needs that isn't UI: reading the helper scripts' output lines,
 // the QR code DepotDownloader draws, and the per-mod status files. Tested by launcher/Tests/main.swift.
+import CoreGraphics
 import Foundation
 
 /// One line from `updater.py run`.
@@ -287,4 +288,68 @@ func installedVersion(gameDir: URL) -> String? {
         guard n.hasPrefix("project-reclaimer-v"), n.hasSuffix(".exe") else { return nil }
         return String(n.dropFirst(19).dropLast(4))
     }.max { versionParts($0).lexicographicallyPrecedes(versionParts($1)) }
+}
+
+// MARK: - a game left running without a window
+
+/// A window owned by one of this install's Wine processes.
+struct WineWindow: Equatable {
+    var number: Int
+    var width: Double
+    var height: Double
+    var onscreen: Bool
+}
+
+/// Project Reclaimer can leave the game running under Wine after the player quits it: its window closes, but the
+/// game and its engine worker never exit, and the worker spins a full CPU core until it's killed (seen with 0.9.21:
+/// "EXIT GAME confirmed", "Local runtime stopped", then neither process ended).
+///
+/// The game counts as over once a window of its has been on screen and then none of those is left, for `grace`
+/// seconds when the game's log says its runtime stopped, else (some other way of quitting) `longGrace`. Only a window
+/// that was on screen counts: Wine keeps hidden 500×500 helper windows and 1512×33 menu-bar strips that never are.
+/// A shown window that is minimized, hidden or on another Space still counts.
+struct WindowlessGame {
+    static let grace: TimeInterval = 20
+    static let longGrace: TimeInterval = 120
+    private var shown: Set<Int> = []
+    private(set) var goneSince: Date?
+
+    /// windows: this install's Wine windows (nil: macOS couldn't list them); stopped: the log says the runtime
+    /// stopped. True once the game counts as over.
+    mutating func isOver(windows: [WineWindow]?, stopped: Bool, now: Date = Date()) -> Bool {
+        guard let windows else { return false }
+        let gameSized = windows.filter { $0.width >= 320 && $0.height >= 200 }
+        for w in gameSized where w.onscreen { shown.insert(w.number) }
+        if shown.isEmpty || gameSized.contains(where: { shown.contains($0.number) }) {
+            goneSince = nil  // still starting (no window yet), or the game's window is there
+            return false
+        }
+        let since = goneSince ?? now
+        goneSince = since
+        return now.timeIntervalSince(since) >= (stopped ? Self.grace : Self.longGrace)
+    }
+}
+
+/// The windows owned by processes running from `wineDir` (this install's Wine), including minimized ones, hidden
+/// ones and ones on another Space. Owners, sizes and on-screen state need no Screen Recording permission (only
+/// window titles do). nil when macOS couldn't list windows at all.
+func wineWindows(wineDir: URL) -> [WineWindow]? {
+    guard let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    let prefix = wineDir.resolvingSymlinksInPath().path + "/"  // (proc_pidpath gives the real path)
+    var isWine: [Int32: Bool] = [:]
+    var windows: [WineWindow] = []
+    for window in list {
+        guard let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+              let number = (window[kCGWindowNumber as String] as? NSNumber)?.intValue,
+              let bounds = window[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
+        if isWine[pid] == nil {
+            var path = [CChar](repeating: 0, count: 4096)  // PROC_PIDPATHINFO_MAXSIZE
+            isWine[pid] = proc_pidpath(pid, &path, UInt32(path.count)) > 0 && String(cString: path).hasPrefix(prefix)
+        }
+        guard isWine[pid] == true else { continue }
+        windows.append(WineWindow(number: number, width: Double(rect.width), height: Double(rect.height),
+                                  onscreen: (window[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false))
+    }
+    return windows
 }

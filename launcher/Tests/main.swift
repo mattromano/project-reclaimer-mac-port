@@ -165,5 +165,36 @@ try? "0.9.11\n".write(to: gd.appendingPathComponent("chosen-version"), atomicall
 check(installedVersion(gameDir: gd) == "0.9.11", "chosen version")
 try? fm.removeItem(at: gd)
 
+// a game that quit but left Wine running without a window
+let w0 = Date(timeIntervalSince1970: 1_000_000)
+let gameWin = WineWindow(number: 7, width: 2560, height: 1440, onscreen: true)
+let minimized = WineWindow(number: 7, width: 2560, height: 1440, onscreen: false)
+let helper = WineWindow(number: 3, width: 500, height: 500, onscreen: false)    // never on screen
+let strip = WineWindow(number: 4, width: 1512, height: 33, onscreen: true)      // menu-bar strip
+var wg = WindowlessGame()
+check(!wg.isOver(windows: [helper], stopped: true, now: w0), "starting (no window shown yet): not over")
+check(!wg.isOver(windows: [helper], stopped: true, now: w0 + 300), "never shown a window: never over")
+check(!wg.isOver(windows: [helper, gameWin], stopped: false, now: w0 + 301), "game window on screen")
+check(!wg.isOver(windows: [helper, minimized], stopped: false, now: w0 + 400), "minimized/other Space: still there")
+check(!wg.isOver(windows: [helper, strip], stopped: true, now: w0 + 401), "window gone")
+check(wg.goneSince == w0 + 401, "grace started")
+check(!wg.isOver(windows: [helper, strip], stopped: true, now: w0 + 420), "gone 19 s: not yet")
+check(!wg.isOver(windows: [gameWin], stopped: true, now: w0 + 420.5), "window back (a restart): not over")
+check(wg.goneSince == nil, "grace reset")
+check(!wg.isOver(windows: [helper], stopped: true, now: w0 + 421), "gone again: grace starts over")
+check(!wg.isOver(windows: nil, stopped: true, now: w0 + 430), "windows couldn't be listed: never over")
+check(wg.isOver(windows: [helper], stopped: true, now: w0 + 441), "gone 20 s after the runtime stopped: over")
+var quiet = WindowlessGame()  // gone without the log saying the runtime stopped: the long grace
+_ = quiet.isOver(windows: [gameWin], stopped: false, now: w0)
+check(!quiet.isOver(windows: [], stopped: false, now: w0 + 1), "gone, log quiet")
+check(!quiet.isOver(windows: [], stopped: false, now: w0 + 60), "60 s, log quiet: not yet")
+check(quiet.isOver(windows: [], stopped: false, now: w0 + 121), "120 s: over")
+var newer = WindowlessGame()  // a new window that is shown replaces the old one
+_ = newer.isOver(windows: [gameWin], stopped: false, now: w0)
+check(!newer.isOver(windows: [WineWindow(number: 9, width: 1920, height: 1080, onscreen: true)], stopped: true,
+                    now: w0 + 100), "recreated window shown: not over")
+let noWine = fm.temporaryDirectory.appendingPathComponent("no-wine-\(getpid())")
+check(wineWindows(wineDir: noWine) == [], "nothing runs from a missing folder: no windows")
+
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

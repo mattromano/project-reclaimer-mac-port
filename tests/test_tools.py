@@ -28,7 +28,8 @@ class ToolsTest(unittest.TestCase):
         for d in ("game", "logs", "tools", WORKSHOP / "content" / "976730"):
             (self.home / d).mkdir(parents=True)
         # the helper scripts sit next to tools.py in an install's game folder
-        for f in ("workshop_helper.py", "presets.py", "reclaimer-loopback.sh", "local.projectreclaimer.loopback.plist"):
+        for f in ("workshop_helper.py", "presets.py", "fit.py", "reclaimer-loopback.sh",
+                  "local.projectreclaimer.loopback.plist"):
             shutil.copy(REPO / "scripts" / f, self.home / "game" / f)
         shutil.copy(TOOLS, self.home / "game" / "tools.py")
         self.apps = self.tmp / "Applications"

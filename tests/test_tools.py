@@ -322,6 +322,66 @@ class ToolsTest(unittest.TestCase):
         self.assertNotIn("SecretName", text)
         self.assertNotIn("steam-account", " ".join(names))
 
+    def test_report_includes_the_startup_state_and_the_forge_cache(self):
+        # a stalled start: the build marker is logged, the cache was last written before this run, long enough ago
+        (self.home / "steam-account").write_text("SecretName\n")
+        self.write_cache(payload=b"x" * 4096)
+        time.sleep(1.2)  # (ps reports elapsed in whole seconds, so make the cache clearly older than the start)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        rc, out = self.run_tool("report", RECLAIMER_STALL_SECONDS="0")
+        self.assertEqual(rc, 0, out)
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            text = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist())
+        self.assertIn("Startup: stalled", text)
+        self.assertIn("stall threshold 0 s", text)
+        self.assertIn("Forge cache: 4096 bytes in 1 file", text)
+        self.assertIn("no cache writes this run", text)
+        self.assertNotIn("SecretName", text)  # (the report is made to be shared)
+
+    def test_report_carries_the_startup_state_as_data(self):
+        self.write_cache(payload=b"x" * 4096)
+        time.sleep(1.2)  # (as above: the cache is from an earlier run)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        rc, out = self.run_tool("report", RECLAIMER_STALL_SECONDS="0")
+        self.assertEqual(rc, 0, out)
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            startup = json.loads(z.read("startup-state.json"))
+        self.assertEqual(startup["state"], "stalled")
+        self.assertEqual(startup["stall_after_s"], 0)
+        self.assertGreaterEqual(startup["elapsed_s"], 0)
+        self.assertFalse(startup["wrote_this_run"])
+        self.assertEqual(startup["forge_cache"]["bytes"], 4096)
+        self.assertEqual(startup["forge_cache"]["files"], 1)
+        self.assertGreaterEqual(startup["forge_cache"]["newest_age_s"], 1)
+
+    def test_report_still_works_when_the_game_has_never_run(self):
+        # no game process, no Forge cache, no log: the report must still be made
+        rc, out = self.run_tool("report")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out[-1].startswith("ok "), out)
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            startup = json.loads(z.read("startup-state.json"))
+            summary = z.read("summary.txt").decode()
+        self.assertEqual(startup["state"], "stopped")
+        self.assertEqual(startup["elapsed_s"], None)
+        self.assertEqual(startup["forge_cache"], {"bytes": 0, "files": 0, "newest_age_s": None})
+        self.assertIn("Startup: stopped", summary)
+        self.assertIn("Forge cache: 0 bytes in 0 files, never written", summary)
+
+    def test_report_still_works_when_the_startup_check_fails(self):
+        t = self.load()
+        with mock.patch.object(t, "startup_state", side_effect=RuntimeError("the probe broke")):
+            result = t.report()
+        self.assertTrue(result.startswith("ok "), result)
+        with zipfile.ZipFile(Path(result[3:])) as z:
+            summary = z.read("summary.txt").decode()
+            names = z.namelist()
+        self.assertIn("Startup: unknown (the startup check failed)", summary)
+        self.assertNotIn("startup-state.json", names)  # (no invented verdict)
+        self.assertNotIn("the probe broke", summary)  # (an error's own words can name paths)
+
     # ---- graphics / steam --------------------------------------------------------------------------------------
     def test_forget_steam(self):
         (self.home / "steam-account").write_text("RealName_1\n")

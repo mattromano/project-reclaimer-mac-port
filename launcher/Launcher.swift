@@ -562,6 +562,23 @@ final class Launcher: ObservableObject {
         notice = "The game was stopped. Press Play to start it again."
     }
 
+    /// From a stalled startup row: stop this attempt and start it again, so "quit other apps and try again" is one
+    /// action in the same window. The game's own completion marker still decides whether it is ready.
+    func tryAgainAfterStall() {
+        notice = "Stopping the game and starting it again…"
+        keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in
+            gameForceQuit()
+            play()
+        }))
+    }
+
+    /// From a stalled startup row, the same command as Tools > Force Quit: stop a build that will not finish. The
+    /// window stays open and ready to Play, so a stall never takes Play away.
+    func forceQuitGame() {
+        notice = "Stopping the game…"
+        keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in gameForceQuit() }))
+    }
+
     /// The game ended: if its log shows a crash, say what happened and stay open for Play again; otherwise close
     /// (or, within seconds of Play, say it closed right away). Never while Tools is open: macOS refuses to quit
     /// with a sheet open (and beeps each time), then quit as soon as Done closed it, mid-way through what the

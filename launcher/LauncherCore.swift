@@ -401,12 +401,28 @@ struct StartupState: Decodable, Equatable {
     let elapsed_s: Double?
 }
 
-/// What the window says about a starting game: a title, a plain line of detail, and how to draw it.
+/// Something the window offers when startup isn't progressing. The copy lives in the pure mapping, so a test can
+/// say what the window offers without launching a game; the view only draws the buttons.
+enum StartupAction: String, Equatable, Hashable {
+    case tryAgain, forceQuit
+
+    var title: String {
+        switch self {
+        case .tryAgain: return "Try Again"
+        case .forceQuit: return "Force Quit"
+        }
+    }
+}
+
+/// What the window says about a starting game: a title, a plain line of detail, how to draw it, and — when there is
+/// something to do about it — a second line of advice and the actions it names.
 struct StartupDisplay: Equatable {
     enum Look: Equatable { case working, done, warning, stopped }
     var title: String
     var detail: String
     var look: Look
+    var advice: String? = nil
+    var actions: [StartupAction] = []
     var warning: Bool { look == .warning }
 }
 
@@ -433,8 +449,16 @@ func startupDisplay(state: String, detail: String = "", elapsed: TimeInterval? =
     case "ready":
         return StartupDisplay(title: "Game ready", detail: words("The game is up."), look: .done)
     case "stalled":
-        return StartupDisplay(title: "Startup has stalled", detail: words("Startup stopped progressing."),
-                              look: .warning)
+        // The command has already compared the cache with this run's start time, so the window repeats its verdict
+        // in plain words rather than re-checking anything. Both ways out stay offered: trying again restarts the
+        // build, force-quitting stops it — neither is taken away by a stall.
+        return StartupDisplay(
+            title: "Startup stopped progressing",
+            detail: "The game stopped making progress while building its Forge asset library. The likely cause is "
+                + "not enough free memory: that build needs more than this Mac has available right now.",
+            look: .warning,
+            advice: "Quit other apps, then try again. If it still doesn't finish, force-quit it.",
+            actions: [.tryAgain, .forceQuit])
     case "stopped":
         return StartupDisplay(title: "Game stopped", detail: words("The game isn't running."), look: .stopped)
     default:

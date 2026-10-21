@@ -262,6 +262,7 @@ check(sBuilding?.look == .working, "building: still working")
 check(sBuilding?.title == "Building the Forge asset library", "building title: \(sBuilding?.title ?? "-")")
 check(sBuilding?.detail.contains("2 min 12 s") == true, "building says how long: \(sBuilding?.detail ?? "-")")
 check(sBuilding?.detail.contains("first start takes a while") == true, "building sets the expectation")
+check(sBuilding?.actions.isEmpty == true, "building offers no recovery actions")
 
 // a long build is still a build: only the command calls a stall (it has the cache and the start time)
 check(startup("building", elapsed: 9000)?.warning == false, "building for a long time is not the window's call")
@@ -272,8 +273,36 @@ check(sReady?.title == "Game ready" && sReady?.detail == "The game is up.", "rea
 
 let sStalled = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing")
 check(sStalled?.look == .warning && sStalled?.warning == true, "stalled: a warning")
-check(sStalled?.detail == "Startup stopped progressing: the Forge asset library has written nothing",
-      "stalled: the command's own words, not the window's guess")
+check(sStalled?.title == "Startup stopped progressing", "stalled says what happened: \(sStalled?.title ?? "-")")
+check(sStalled?.detail.lowercased().contains("memory") == true,
+      "stalled names memory as the likely cause: \(sStalled?.detail ?? "-")")
+check(sStalled?.advice?.lowercased().contains("other apps") == true,
+      "stalled says to quit other apps: \(sStalled?.advice ?? "-")")
+check(sStalled?.advice?.lowercased().contains("try again") == true,
+      "stalled says to try again: \(sStalled?.advice ?? "-")")
+check(sStalled?.advice?.lowercased().contains("force-quit") == true,
+      "stalled points at force-quit: \(sStalled?.advice ?? "-")")
+for jargon in ["cache", "threshold", "wrote_this_run", "process"] {
+    check(sStalled?.advice?.lowercased().contains(jargon) != true, "stalled advice has no jargon: \(jargon)")
+}
+check(sStalled?.look != .done, "a stall never claims the game is ready")
+
+// a stall leaves both ways out in place: try again (Play, once the build is stopped) and force-quit
+check(sStalled?.actions == [.tryAgain, .forceQuit], "stalled offers both actions: \(sStalled?.actions ?? [])")
+check(sStalled?.actions.map(\.title) == ["Try Again", "Force Quit"], "stalled names both buttons plainly")
+
+// the cache is still being written: the window keeps saying building, and offers no recovery
+let sWriting = startupDisplay(json: #"{"state": "building", "elapsed_s": 132, "stall_after_s": 0, "wrote_this_run": true, "detail": "Building the Forge asset library."}"#)
+check(sWriting?.look == .working && sWriting?.warning == false, "still writing: building, not a warning")
+check(sWriting?.actions.isEmpty == true, "still writing: nothing to recover from")
+check(sWriting?.advice == nil, "still writing: no advice")
+check(sWriting?.detail.lowercased().contains("memory") == false, "still writing: no memory warning")
+
+// a cache left by an earlier run: the command calls the stall, and the window passes that on rather than second-guessing
+let sLeftover = startupDisplay(json: #"{"state": "stalled", "elapsed_s": 200, "stall_after_s": 180, "wrote_this_run": false}"#)
+check(sLeftover?.warning == true, "a leftover cache does not hide the stall")
+check(sLeftover?.actions.contains(.forceQuit) == true, "force quit stays offered while stalled")
+check(sLeftover?.actions.contains(.tryAgain) == true, "trying again stays offered while stalled")
 
 let sStopped = startup("stopped", detail: "The game isn't running.")
 check(sStopped?.look == .stopped && sStopped?.warning == false, "stopped: not a warning")

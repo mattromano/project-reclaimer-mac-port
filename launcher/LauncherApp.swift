@@ -285,7 +285,7 @@ func renderStates(to dir: URL) {
         }),
         ("7c-startup-stalled", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123"); $0.playing = true
-            $0.startup = startupDisplay(state: "stalled", elapsed: 240)
+            $0.startup = startupDisplay(state: "stalled", elapsed: 240, tier: .constrained)
         }),
         ("9-game-closed", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")

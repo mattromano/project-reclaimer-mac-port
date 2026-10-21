@@ -234,23 +234,28 @@ check(knownLayout(vendor: 0x054C)?["back"] == "b\(GCButton.back.rawValue)"
 // the machine-fit tier sets an expectation before Play; fit.py decides it (the window never measures RAM itself)
 let constrainedFit = #"{"arch": "arm64", "cores": 8, "free_disk_gb": 120, "macos": "14.0", "ram_gb": 8, "screen": [2560, 1440], "tier": "constrained"}"#
 let standardFit = #"{"arch": "arm64", "cores": 10, "free_disk_gb": 200, "macos": "14.0", "ram_gb": 32, "screen": [2560, 1440], "tier": "standard"}"#
-check(machineTier(fitJSON: constrainedFit) == "constrained", "fit.py says 8 GB is constrained")
-check(machineTier(fitJSON: standardFit) == "standard", "fit.py says 32 GB is standard")
+let boundaryFit = #"{"arch": "arm64", "cores": 8, "free_disk_gb": 120, "macos": "14.0", "ram_gb": 16, "screen": [2560, 1440], "tier": "standard"}"#
+check(machineTier(fitJSON: constrainedFit) == .constrained, "fit.py says 8 GB is constrained")
+check(machineTier(fitJSON: standardFit) == .standard, "fit.py says 32 GB is standard")
+check(machineTier(fitJSON: boundaryFit) == .standard, "fit.py says 16 GB is standard (the boundary)")
 check(machineTier(fitJSON: "") == nil, "no answer from fit.py: no tier")
 check(machineTier(fitJSON: "Traceback (most recent call last):") == nil, "a failing fit.py: no tier")
 check(machineTier(fitJSON: #"{"ram_gb": 8}"#) == nil, "fit.py without a tier: no tier")
-let expectation = startupExpectation(tier: "constrained")
+// a name this build doesn't know is standard: an unknown answer never invents a memory warning
+check(machineTier(fitJSON: #"{"tier": "something-new"}"#) == .standard, "an unrecognised tier is standard")
+check(machineTier(fitJSON: #"{"tier": 3}"#) == nil, "a tier that isn't a name: no tier")
+let expectation = startupExpectation(tier: .constrained)
 check(expectation != nil, "a constrained Mac is told before Play that the first start takes a long time")
 check(expectation?.lowercased().contains("memory") == true, "the expectation says why: \(expectation ?? "-")")
-check(startupExpectation(tier: "standard") == nil, "a standard Mac is told nothing")
+check(startupExpectation(tier: .standard) == nil, "a standard Mac is told nothing")
 check(startupExpectation(tier: nil) == nil, "fit.py couldn't answer: no warning, not a guess")
-check(startupExpectation(tier: "something-new") == nil, "an unrecognised tier: no warning")
 // what the window says about a starting game, from tools.py startup-state's one line (tested state by state)
-func startup(_ state: String, elapsed: Double? = nil, detail: String? = nil) -> StartupDisplay? {
+func startup(_ state: String, elapsed: Double? = nil, detail: String? = nil,
+             tier: Tier = .standard) -> StartupDisplay? {
     let seconds = elapsed.map { String($0) } ?? "null"
     var json = "{\"state\": \"\(state)\", \"elapsed_s\": \(seconds), \"stall_after_s\": 180"
     if let detail { json += ", \"detail\": \"\(detail)\"" }
-    return startupDisplay(json: json + "}")
+    return startupDisplay(json: json + "}", tier: tier)
 }
 
 let sStarting = startup("starting", detail: "The game is starting.")
@@ -271,7 +276,9 @@ let sReady = startup("ready", detail: "The game is up.")
 check(sReady?.look == .done && sReady?.warning == false, "ready: done, not a warning")
 check(sReady?.title == "Game ready" && sReady?.detail == "The game is up.", "ready: the game is up")
 
-let sStalled = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing")
+// a constrained Mac: the stall names memory as the likely cause, in plain words
+let sStalled = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing",
+                       tier: .constrained)
 check(sStalled?.look == .warning && sStalled?.warning == true, "stalled: a warning")
 check(sStalled?.title == "Startup stopped progressing", "stalled says what happened: \(sStalled?.title ?? "-")")
 check(sStalled?.detail.lowercased().contains("memory") == true,
@@ -291,6 +298,23 @@ check(sStalled?.look != .done, "a stall never claims the game is ready")
 check(sStalled?.actions == [.tryAgain, .forceQuit], "stalled offers both actions: \(sStalled?.actions ?? [])")
 check(sStalled?.actions.map(\.title) == ["Try Again", "Force Quit"], "stalled names both buttons plainly")
 
+// a standard Mac (or one fit.py couldn't answer for) is told nothing about memory: user story 6
+let sStalledStandard = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing")
+check(sStalledStandard?.look == .warning, "a standard Mac's stall is still a warning")
+check(sStalledStandard?.title == sStalled?.title, "the stall is named the same way on every Mac")
+check(sStalledStandard?.detail.lowercased().contains("memory") != true
+      && sStalledStandard?.advice?.lowercased().contains("memory") != true,
+      "a standard Mac is told nothing about memory: \(sStalledStandard?.detail ?? "-")")
+check(sStalledStandard?.detail.lowercased().contains("progress") == true,
+      "the neutral stall still says startup stopped progressing")
+check(sStalledStandard?.actions == [.tryAgain, .forceQuit], "the neutral stall still offers both actions")
+check(sStalledStandard?.advice?.lowercased().contains("try again") == true
+      && sStalledStandard?.advice?.lowercased().contains("force-quit") == true,
+      "the neutral stall names both ways out: \(sStalledStandard?.advice ?? "-")")
+// no tier at all (fit.py never answered): still neutral, never a guess
+check(startupDisplay(json: #"{"state": "stalled", "elapsed_s": 200}"#)?.detail.lowercased().contains("memory") != true,
+      "no tier: a neutral stall, not a memory claim")
+
 // the cache is still being written: the window keeps saying building, and offers no recovery
 let sWriting = startupDisplay(json: #"{"state": "building", "elapsed_s": 132, "stall_after_s": 0, "wrote_this_run": true, "detail": "Building the Forge asset library."}"#)
 check(sWriting?.look == .working && sWriting?.warning == false, "still writing: building, not a warning")
@@ -303,6 +327,25 @@ let sLeftover = startupDisplay(json: #"{"state": "stalled", "elapsed_s": 200, "s
 check(sLeftover?.warning == true, "a leftover cache does not hide the stall")
 check(sLeftover?.actions.contains(.forceQuit) == true, "force quit stays offered while stalled")
 check(sLeftover?.actions.contains(.tryAgain) == true, "trying again stays offered while stalled")
+
+// Try Again stops the game first: only a stop that worked may be followed by a second start
+check(tryAgainStep(forceQuitExit: 0, said: "ok") == .restart, "a game that stopped is started again")
+let failedStop = tryAgainStep(forceQuitExit: 1,
+                              said: "error: The game didn't stop. Restart your Mac (Apple menu > Restart) to close it.")
+check(failedStop != .restart, "a game that didn't stop is not started again")
+if case .failed(let why) = failedStop {
+    check(why.contains("didn't stop") && why.contains("Restart your Mac"),
+          "the player is told why, in the tool's own words: \(why)")
+    check(!why.hasPrefix("error: "), "the error line's prefix is not passed on: \(why)")
+} else {
+    check(false, "a failed force-quit is a failed Try Again")
+}
+if case .failed(let why) = tryAgainStep(forceQuitExit: 1, said: "") {
+    check(why.contains("didn't stop") && why.contains("Restart your Mac"),
+          "a force quit that said nothing still explains itself: \(why)")
+} else {
+    check(false, "a force-quit that failed without a line is still a failure")
+}
 
 let sStopped = startup("stopped", detail: "The game isn't running.")
 check(sStopped?.look == .stopped && sStopped?.warning == false, "stopped: not a warning")
@@ -329,6 +372,12 @@ check(elapsedText(-5) == "0 s", "never negative")
 // memory, as fit.py decides it: under 16 GB is constrained (and unknown RAM isn't)
 check(memoryGigabytes(8 * 1 << 30) == 8 && isConstrainedMemory(8 * 1 << 30), "8 GB Mac: constrained")
 check(!isConstrainedMemory(16 * 1 << 30) && !isConstrainedMemory(0), "16 GB and unknown: not constrained")
+// Setup counts RAM itself and fit.py decides the tier after install: they can't share a source, so pin both to the
+// same boundary. fit.py's own answer for these numbers is pinned in tests/test_fit.py.
+for (ramGB, expected) in [(8, Tier.constrained), (16, Tier.standard)] {
+    check(isConstrainedMemory(UInt64(ramGB) << 30) == (expected == .constrained),
+          "Setup's memory check agrees with fit.py's tier at \(ramGB) GB")
+}
 check(friendlyStep("This Mac") == "Checking this Mac's memory", "installer's This Mac step")
 
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")

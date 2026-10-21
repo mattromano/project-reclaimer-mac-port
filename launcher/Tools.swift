@@ -243,7 +243,7 @@ struct ToolsSheet: View {
                              "For a frozen game window that won't close, even with Force Quit.") {
                             t.run("Stopping the game…", ["force-quit"]) { last in
                                 if t.succeeded(last) {
-                                    launcher.gameForceQuit()
+                                    launcher.markGameStopped()
                                     t.say("The game was stopped.")
                                 } else { t.say(t.error(in: last) ?? "The game couldn't be stopped. Restart your Mac to close it.", ok: false) }
                             }

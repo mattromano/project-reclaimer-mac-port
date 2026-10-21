@@ -97,6 +97,9 @@ final class Launcher: ObservableObject {
     private var startupPoll: LineProcess?      // `tools.py startup-state` while a game starts (one at a time)
     private var startupPollSince: Date?
     private var startupAnswer = ""             // the JSON line that poll printed
+    /// fit.py's tier for this Mac, read once before Play. It decides whether a stall may mention memory, and starts
+    /// standard so a failed or pending probe never invents a warning (and never invents a shortage either).
+    private var tier: Tier = .standard
     private var timer: Timer?
     private var ticks = 0
     private var didStart = false
@@ -190,7 +193,10 @@ final class Launcher: ObservableObject {
     /// failing fit.py leaves the window silent rather than guessing.
     func checkMachine() {
         keep(python("fit.py", ["--json"], onLine: { [self] line in
-            memoryNotice = startupExpectation(tier: machineTier(fitJSON: line))
+            // decoded once: the notice before Play and the stalled copy both read this one tier
+            let answer = machineTier(fitJSON: line)
+            if let answer { tier = answer }
+            memoryNotice = startupExpectation(tier: answer)
         }, onExit: { _ in }))
     }
 
@@ -433,8 +439,8 @@ final class Launcher: ObservableObject {
             startupPoll = nil
             startupPollSince = nil
             guard playing else { return }  // the game ended while we asked: there is nothing to report any more
-            if status == 0, let shown = startupDisplay(json: startupAnswer) {
-                if shown != startup { startup = shown }
+            if status == 0, let shown = startupDisplay(json: startupAnswer, tier: tier) {
+                startup = shown
             } else {
                 if !startupAnswer.isEmpty { log("startup state unreadable (exit \(status)): \(startupAnswer)") }
                 startup = nil  // no verdict, so the window behaves exactly as it did before
@@ -544,7 +550,7 @@ final class Launcher: ObservableObject {
         notice = target == "newest" ? "Switching back to the newest Project Reclaimer and rejoining…"
                                     : "Switching to Project Reclaimer \(target) and rejoining…"
         keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in
-            gameForceQuit()
+            markGameStopped()
             notice = "Getting Project Reclaimer \(target == "newest" ? "(newest)" : target)…"
             useVersion(target) { [self] error in
                 if let error { notice = nil; gameError = error; return }
@@ -555,28 +561,47 @@ final class Launcher: ObservableObject {
         }))
     }
 
-    /// Called by Tools > Force quit: the window stays, ready to Play again.
-    func gameForceQuit() {
+    /// Called when `tools.py force-quit` has stopped the game (from Tools, from a stalled row, or before switching
+    /// versions): reset the window to "not playing" but stay open, ready to Play again. It spawns nothing.
+    func markGameStopped() {
         playing = false
         gameGoneSince = nil
         notice = "The game was stopped. Press Play to start it again."
     }
 
     /// From a stalled startup row: stop this attempt and start it again, so "quit other apps and try again" is one
-    /// action in the same window. The game's own completion marker still decides whether it is ready.
+    /// action in the same window. The game's own completion marker still decides whether it is ready. Only a game
+    /// that really stopped is started again: if force-quit failed, the stall stays on screen and its error is shown,
+    /// rather than a second game starting over the running one.
     func tryAgainAfterStall() {
         notice = "Stopping the game and starting it again…"
-        keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in
-            gameForceQuit()
-            play()
-        }))
+        var answer = ""
+        let stop = python("tools.py", ["force-quit"], onLine: { line in answer = line }, onExit: { [self] status in
+            switch tryAgainStep(forceQuitExit: status, said: answer) {
+            case .restart:
+                notice = nil
+                markGameStopped()
+                play()
+            case .failed(let why):
+                notice = nil
+                gameError = why  // (the window stays on the stall: nothing is launched)
+            }
+        })
+        if stop == nil {
+            // the command couldn't even start: the same rule applies, so nothing is launched over the running game
+            notice = nil
+            gameError = "The game couldn't be stopped, so it wasn't started again. Restart your Mac (Apple menu > "
+                + "Restart), then press Play."
+            return
+        }
+        keep(stop)
     }
 
-    /// From a stalled startup row, the same command as Tools > Force Quit: stop a build that will not finish. The
-    /// window stays open and ready to Play, so a stall never takes Play away.
-    func forceQuitGame() {
+    /// The process a Force Quit starts, from a stalled startup row or Tools: the same command as Tools > Force Quit.
+    /// It stops a build that will not finish; `markGameStopped()` decides what the window then shows.
+    func startForceQuit() {
         notice = "Stopping the game…"
-        keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in gameForceQuit() }))
+        keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in markGameStopped() }))
     }
 
     /// The game ended: if its log shows a crash, say what happened and stay open for Play again; otherwise close

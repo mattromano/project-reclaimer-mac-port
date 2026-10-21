@@ -235,6 +235,16 @@ class ToolsTest(unittest.TestCase):
         self.write_log("Forge library: building it while the game starts.\n")
         self.assertEqual(self.startup()["state"], "stopped")
 
+    def test_startup_state_with_nothing_installed_reports_stopped(self):
+        # no prefix, no log, no cache (a first run, or an install that stopped partway): the probe must answer, not
+        # crash, and must not invent a state
+        shutil.rmtree(self.home / "prefix-wine")
+        shutil.rmtree(self.home / "logs")
+        state = self.startup()
+        self.assertEqual(state["state"], "stopped")
+        self.assertIsNone(state["elapsed_s"])
+        self.assertEqual(state["forge_cache"], {"bytes": 0, "files": 0, "newest_age_s": None})
+
     def test_startup_state_is_ready_once_the_loading_screen_finishes(self):
         self.start_fake_game()
         self.write_log("Menu loading screen finished.\n")
@@ -262,6 +272,7 @@ class ToolsTest(unittest.TestCase):
         self.write_log("Forge library: building it while the game starts.\n")
         state = self.startup(RECLAIMER_STALL_SECONDS="3600")
         self.assertEqual(state["state"], "building")  # (too soon to call it a stall)
+
     def test_startup_state_is_not_stalled_while_the_cache_is_writing(self):
         self.start_fake_game()
         time.sleep(1.2)  # (as above: the write has to be clearly after the start)

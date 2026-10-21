@@ -308,7 +308,7 @@ struct ContentView: View {
                 StartupRow(display: s) { action in
                     switch action {
                     case .tryAgain: m.tryAgainAfterStall()
-                    case .forceQuit: m.forceQuitGame()
+                    case .forceQuit: m.startForceQuit()
                     }
                 }
             }

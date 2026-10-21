@@ -358,6 +358,36 @@ let sStopped = startup("stopped", detail: "The game isn't running.")
 check(sStopped?.look == .stopped && sStopped?.warning == false, "stopped: not a warning")
 check(sStopped?.title == "Game stopped" && sStopped?.detail == "The game isn't running.", "stopped: the game isn't running")
 
+// `ready` is the game's own completion marker, and it is final: the log grows past the 400 KB the command reads, its
+// marker falls out of it, and a later poll would say "starting" again. Once ready is seen, it stays (and asking stops).
+check(sReady?.settled == true, "ready settles startup")
+check(sBuilding?.settled == false && sStalled?.settled == false, "only ready settles startup")
+check(sStopped?.settled == false, "a stopped game is not a settled start")
+
+// while a stop is in flight the stall row offers nothing to press: two clicks would run two stops, and two games
+let sStopping = sStalled?.whileStopping
+check(sStopping?.actions.isEmpty == true, "a stop in flight offers no actions: \(sStopping?.actions ?? [])")
+check(sStopping?.look == .working, "a stop in flight is working, not a warning")
+check(sStopping?.title == "Stopping the game", "a stop in flight says what it is doing: \(sStopping?.title ?? "-")")
+check(mayStop(stopping: false) && !mayStop(stopping: true), "a second stop cannot start over a stop in flight")
+check(mayWatchForGameGone(playing: true, stopping: false), "a running game is watched")
+check(!mayWatchForGameGone(playing: true, stopping: true),
+      "while stopping, the game going away is expected: never judged gone")
+check(!mayWatchForGameGone(playing: false, stopping: false), "nothing is watched when nothing plays")
+
+// the note before Play is for the first start: once the Forge library exists there is no long build to expect
+let noCacheAnswer = #"{"state": "stopped", "elapsed_s": null, "stall_after_s": 180, "wrote_this_run": false, "forge_cache": {"bytes": 0, "files": 0, "newest_age_s": null}}"#
+let cacheAnswer = #"{"state": "stopped", "elapsed_s": null, "stall_after_s": 180, "wrote_this_run": false, "forge_cache": {"bytes": 8417280, "files": 96, "newest_age_s": 90000}}"#
+check(forgeCacheBuilt(stateJSON: noCacheAnswer) == false, "no cache yet: the first build is still to come")
+check(forgeCacheBuilt(stateJSON: cacheAnswer) == true, "a written cache: the library exists")
+check(forgeCacheBuilt(stateJSON: "not json") == nil, "unreadable: no answer about the cache")
+check(forgeCacheBuilt(stateJSON: #"{"state": "building"}"#) == nil, "no cache facts: no answer")
+check(startupExpectation(tier: .constrained, cacheBuilt: false) != nil, "a constrained Mac's first start is named")
+check(startupExpectation(tier: .constrained, cacheBuilt: true) == nil, "the library exists: no note on every launch")
+check(startupExpectation(tier: .constrained, cacheBuilt: nil) != nil,
+      "no answer about the cache keeps the note rather than guessing")
+check(startupExpectation(tier: .standard, cacheBuilt: false) == nil, "a standard Mac is still told nothing")
+
 // no detail from the command: the window still has a plain line to show
 check(startup("ready")?.detail == "The game is up.", "ready without a detail line")
 check(startup("building")?.detail == "Building. The first start takes a while.", "building without an elapsed time")

@@ -77,6 +77,23 @@ build; the window never promotes one to a stall itself.
 **Polling, not blocking.** While a game runs, the window polls the startup state on a timer off the main thread
 and cancels on exit. Play must never be blocked by a stall; Force Quit stays enabled throughout.
 
+**Ready is final, and asking stops there.** `ready` comes from the game's own completion marker and is the end
+of the question: the window stops polling on it. The command reads a tail of the log, so a long session pushes
+the marker out of that tail and a later poll would answer `starting` again for a game that is up; stopping at
+`ready` is what keeps readiness from decaying. It also means a two-hour session runs a handful of probes, not
+thousands — each one spawns Python and reads the log and the cache.
+
+**One stop at a time.** Try Again and Force Quit both run `force-quit`, which takes up to fifteen seconds. While
+it runs, the stall row offers neither action (a second click would run a second stop and a second `play()`, and
+two games would end up on one install), and the window judges no liveness: the game disappearing is what the
+stop is doing, so a windowless or gone-process check would fire a second stop and `gameEnded` would quit the app
+right after the relaunch. The flag clears when the stop finishes, whether it worked or not.
+
+**The note before Play is for the first start.** It is shown until the Forge asset library exists: a Mac that
+has already built it has no long build to expect on every later launch. The window reads that from
+`startup-state`'s own `forge_cache` facts — one probe at startup, then each poll — rather than walking the cache
+itself, so the note and the stall verdict cannot disagree about what the cache holds.
+
 **Never claim ready without the game's own completion marker.** Absence of a stall is not readiness.
 
 **The tier sets expectations, not gates.** The existing machine-fit tier (constrained below 16 GB) decides

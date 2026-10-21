@@ -44,6 +44,14 @@ final class Launcher: ObservableObject {
             log("startup: " + (startup.map { "\($0.title). \($0.detail)" } ?? "unreadable"))
         }
     }
+    /// A stop is in flight (`tools.py force-quit`, from Try Again or Force Quit). Both row actions are off until it
+    /// finishes, so a second click can't run a second stop and start a second game, and the tick stops judging the
+    /// game's liveness: the game going away is what this stop is doing.
+    @Published var stopping = false {
+        didSet { if stopping != oldValue { log("stopping: \(stopping)") } }
+    }
+    /// The row the window draws: while a stop is in flight it offers no actions and says what it is doing.
+    var startupRow: StartupDisplay? { stopping ? startup?.whileStopping : startup }
     @Published var steamSlow = false  // the Steam check is taking long: offer Skip
     @Published var link = ""
     @Published var linkError: String?
@@ -102,6 +110,10 @@ final class Launcher: ObservableObject {
     /// fit.py's tier for this Mac, read once before Play. It decides whether a stall may mention memory, and starts
     /// standard so a failed or pending probe never invents a warning (and never invents a shortage either).
     private var tier: Tier = .standard
+    private var fitAnswer: Tier?       // fit.py's own answer; nil: it hasn't answered, so nothing is said before Play
+    /// Whether the Forge asset library already exists, from the one `startup-state` probe at startup (its own
+    /// `forge_cache` facts) and from each poll's: nil until one answers. The note before Play is for the first start.
+    private var cacheBuilt: Bool?
     private var timer: Timer?
     private var ticks = 0
     private var didStart = false
@@ -192,14 +204,27 @@ final class Launcher: ObservableObject {
 
     /// fit.py's tier for this Mac sets an expectation only: a constrained Mac (below 16 GB) is told before Play that
     /// the first start builds the Forge asset library and can take a long time. It never blocks Play, and a missing or
-    /// failing fit.py leaves the window silent rather than guessing.
+    /// failing fit.py leaves the window silent rather than guessing. The note is for the *first* start, so one probe
+    /// says whether that build already happened; `startup-state` already knows (its `forge_cache` facts are the same
+    /// cache a stall is judged on), so nothing here walks the cache a second way.
     func checkMachine() {
         keep(python("fit.py", ["--json"], onLine: { [self] line in
             // decoded once: the notice before Play and the stalled copy both read this one tier
             let answer = machineTier(fitJSON: line)
             if let answer { tier = answer }
-            memoryNotice = startupExpectation(tier: answer)
+            fitAnswer = answer
+            updateMemoryNotice()
         }, onExit: { _ in }))
+        // one probe, not a poll (the launcher already runs fit.py here): before Play, nothing needs watching
+        keep(python("tools.py", ["startup-state"], onLine: { [self] line in
+            guard let built = forgeCacheBuilt(stateJSON: line) else { return }
+            cacheBuilt = built
+            updateMemoryNotice()
+        }, onExit: { _ in }))
+    }
+
+    private func updateMemoryNotice() {
+        memoryNotice = startupExpectation(tier: fitAnswer, cacheBuilt: cacheBuilt)
     }
 
     /// The local network addresses Reclaimer needs (added by a startup task) can go missing, e.g. right after a restart
@@ -423,7 +448,13 @@ final class Launcher: ObservableObject {
     /// Ask `tools.py startup-state` what startup is doing: the command walks the Forge cache and lists processes, so
     /// it runs off the main thread and one poll at a time. Its verdict is the window's only source: nothing here
     /// infers "ready" from the game still running.
+    ///
+    /// It asks while startup is unsettled and stops there: `ready` is final (`StartupDisplay.settled`), so polling a
+    /// whole session would only spawn a Python process every 2 s to re-read the log and walk a cache whose answer can
+    /// no longer change. Nothing is asked while a stop is in flight either: that is the window's own doing, not
+    /// startup's.
     private func pollStartup() {
+        guard playing, !stopping, startup?.settled != true else { return }
         if let poll = startupPoll {
             // a wedged probe would leave the line at a stale state: let it go and ask again next tick
             guard let since = startupPollSince, Date().timeIntervalSince(since) > 30 else { return }
@@ -440,9 +471,15 @@ final class Launcher: ObservableObject {
         }, onExit: { [self] status in
             startupPoll = nil
             startupPollSince = nil
-            guard playing else { return }  // the game ended while we asked: there is nothing to report any more
+            // (the game ended, a stop is running, or ready was already seen while this poll was out: nothing to add)
+            guard playing, !stopping, startup?.settled != true else { return }
             if status == 0, let shown = startupDisplay(json: startupAnswer, tier: tier) {
                 startup = shown
+                // the same answer says whether the Forge library exists: once it does, the note before Play is spent
+                if forgeCacheBuilt(stateJSON: startupAnswer) == true, cacheBuilt != true {
+                    cacheBuilt = true
+                    updateMemoryNotice()
+                }
             } else {
                 if !startupAnswer.isEmpty { log("startup state unreadable (exit \(status)): \(startupAnswer)") }
                 startup = nil  // no verdict, so the window behaves exactly as it did before
@@ -568,6 +605,10 @@ final class Launcher: ObservableObject {
     func markGameStopped() {
         playing = false
         gameGoneSince = nil
+        stopping = false   // (the stop this window was running is over)
+        // a rejoin queued for the game that just stopped (a start that never reached its menu) is not the next
+        // game's to replay: after a stop there is no server to join
+        pendingJoin = nil
         notice = "The game was stopped. Press Play to start it again."
     }
 
@@ -576,21 +617,25 @@ final class Launcher: ObservableObject {
     /// that really stopped is started again: if force-quit failed, the stall stays on screen and its error is shown,
     /// rather than a second game starting over the running one.
     func tryAgainAfterStall() {
+        guard mayStop(stopping: stopping) else { return }  // (a second click while the first stop runs: nothing to do)
+        stopping = true
         notice = "Stopping the game and starting it again…"
         var answer = ""
         let stop = python("tools.py", ["force-quit"], onLine: { line in answer = line }, onExit: { [self] status in
             switch tryAgainStep(forceQuitExit: status, said: answer) {
             case .restart:
                 notice = nil
-                markGameStopped()
+                markGameStopped()  // (ends the stop, and drops the old game's join)
                 play()
             case .failed(let why):
+                stopping = false  // (the stall stays on screen, and its buttons work again)
                 notice = nil
-                gameError = why  // (the window stays on the stall: nothing is launched)
+                gameError = why   // (nothing is launched)
             }
         })
         if stop == nil {
             // the command couldn't even start: the same rule applies, so nothing is launched over the running game
+            stopping = false
             notice = nil
             gameError = "The game couldn't be stopped, so it wasn't started again. Restart your Mac (Apple menu > "
                 + "Restart), then press Play."
@@ -602,8 +647,15 @@ final class Launcher: ObservableObject {
     /// The process a Force Quit starts, from a stalled startup row or Tools: the same command as Tools > Force Quit.
     /// It stops a build that will not finish; `markGameStopped()` decides what the window then shows.
     func startForceQuit() {
+        guard mayStop(stopping: stopping) else { return }  // (a second click while the first stop runs: nothing to do)
+        stopping = true
         notice = "Stopping the game…"
-        keep(python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in markGameStopped() }))
+        let stop = python("tools.py", ["force-quit"], onLine: { _ in }, onExit: { [self] _ in markGameStopped() })
+        guard let stop else {
+            stopping = false  // (nothing ran, so the row's actions work again rather than staying off for good)
+            return
+        }
+        keep(stop)
     }
 
     /// The game ended: if its log shows a crash, say what happened and stay open for Play again; otherwise close
@@ -698,7 +750,10 @@ final class Launcher: ObservableObject {
         guard ticks % 2 == 0 else { return }
         if playing { pollStartup() }  // (the command runs off the main thread; nothing is asked while nothing runs)
         processRunning(#"workshop_helper\.py (watch|get)"#) { [self] in helperRunning = $0 }
-        guard playing else { return }
+        // While a stop is in flight the game is meant to be disappearing, so its liveness is not judged here: the
+        // windowless and process checks would fire a second stop, and gameEnded() would quit the app right after the
+        // relaunch. Hands off until the stop ends (it always does: force-quit has its own timeouts).
+        guard mayWatchForGameGone(playing: playing, stopping: stopping) else { return }
         // the game quit but Wine kept it running with no window (see WindowlessGame): it's over, so stop it
         let stopped = windowless.goneSince != nil && gameSaidRuntimeStopped()
         if !checkingCrash, windowless.isOver(windows: wineWindows(wineDir: home.appendingPathComponent("wine")),

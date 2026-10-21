@@ -330,8 +330,12 @@ func machineTier(fitJSON: String) -> Tier? {
 /// What the window says before Play about the first start, if anything. A constrained Mac (below the 16 GB the game
 /// recommends) is told the first asset-library build takes a long time, and why; a standard Mac is told nothing.
 /// nil for a tier fit.py didn't give, so a failed probe never invents a warning.
-func startupExpectation(tier: Tier?) -> String? {
-    guard tier == .constrained else { return nil }
+///
+/// `cacheBuilt` is `tools.py startup-state`'s `forge_cache` facts: the note is for the *first* start, so it goes once
+/// the library exists — a Mac that has built it has nothing long to expect on every later launch. nil (nobody asked
+/// yet, or the answer couldn't be read) keeps the note, the behaviour before this was known.
+func startupExpectation(tier: Tier?, cacheBuilt: Bool? = nil) -> String? {
+    guard tier == .constrained, cacheBuilt != true else { return nil }
     return "This Mac has less memory than the 16 GB the game recommends, so its first start can take a long time: "
         + "before the menu appears, the game builds its Forge asset library. That can take half an hour or more, and "
         + "it can look stuck while it works. Quitting other apps before Play gives it more room."
@@ -411,6 +415,19 @@ struct StartupState: Decodable, Equatable {
     let elapsed_s: Double?
 }
 
+/// Whether the Forge asset library has been built before, from `tools.py startup-state`'s own `forge_cache` facts — the
+/// same command that judges a stall, so the window has one source of truth for the cache rather than walking it too.
+/// false: no file has been written yet (the first build is still to come); nil: the answer couldn't be read, so the
+/// window keeps its earlier behaviour instead of inventing a cached build or a missing one.
+func forgeCacheBuilt(stateJSON line: String) -> Bool? {
+    guard let data = line.data(using: .utf8),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let cache = object["forge_cache"] as? [String: Any] else { return nil }
+    let files = cache["files"] as? Int ?? 0
+    let bytes = cache["bytes"] as? Int ?? 0
+    return files > 0 || bytes > 0
+}
+
 /// Something the window offers when startup isn't progressing. The copy lives in the pure mapping, so a test can
 /// say what the window offers without launching a game; the view only draws the buttons.
 enum StartupAction: String, Equatable, Hashable {
@@ -434,6 +451,19 @@ struct StartupDisplay: Equatable {
     var advice: String? = nil
     var actions: [StartupAction] = []
     var warning: Bool { look == .warning }
+
+    /// Startup is over: the game showed its own completion marker. Final, so it can never decay back to "Starting the
+    /// game": the log keeps growing past the 400 KB the command reads, and its marker falls out of that tail, so a
+    /// later poll would answer "starting" again for a game that is up. Polling stops on this, which is also why
+    /// there is nothing to ask afterwards.
+    var settled: Bool { look == .done }
+
+    /// The same row with a stop in flight: its actions are taken away, so a second click can't run a second stop and
+    /// start a second game, and it says what is happening instead of the stall it is fixing.
+    var whileStopping: StartupDisplay {
+        StartupDisplay(title: "Stopping the game", detail: "Stopping the game now. This can take a few seconds.",
+                       look: .working)
+    }
 }
 
 /// The display for one line of `tools.py startup-state`. nil: the answer couldn't be read (or says a state this
@@ -498,6 +528,15 @@ func elapsedText(_ seconds: TimeInterval) -> String {
 }
 
 // MARK: - trying again after a stall
+
+/// Whether the window may stop the game now. While a stop is already in flight it may not: a second Try Again or
+/// Force Quit would run a second stop and then a second start, and two games would end up running on one install.
+func mayStop(stopping: Bool) -> Bool { !stopping }
+
+/// Whether this tick may judge the game gone (its process finished, or its window went). While a stop is in flight
+/// the game is *meant* to be disappearing — Try Again's own force-quit is doing it — so watching for it would fire a
+/// second stop, and `gameEnded(false)` would quit the app right after the relaunch.
+func mayWatchForGameGone(playing: Bool, stopping: Bool) -> Bool { playing && !stopping }
 
 /// Try Again's first step is stopping this attempt, so `tools.py force-quit`'s answer decides whether a second start
 /// may happen. Starting over a game that wouldn't stop would put two on one install.

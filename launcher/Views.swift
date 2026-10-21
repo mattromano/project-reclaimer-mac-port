@@ -304,7 +304,7 @@ struct ContentView: View {
 
             if let j = m.joinTrouble { JoinTroubleCard(m: m, j: j) }
 
-            if let s = m.startup {
+            if let s = m.startupRow {
                 StartupRow(display: s) { action in
                     switch action {
                     case .tryAgain: m.tryAgainAfterStall()

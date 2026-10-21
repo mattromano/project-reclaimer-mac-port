@@ -12,7 +12,8 @@
   force-quit         stop the game, Wine and wineserver for this install (frozen windows Force Quit can't close)
   mods               JSON: downloaded Workshop mods with titles and sizes, plus free disk space
   remove-mod <id>    delete one downloaded mod (not while the game runs)
-  report             zip the logs and versions (no Steam account name) to the Desktop: "ok <path>"
+  report             zip the logs, versions and what startup is doing (no Steam account name) to the Desktop:
+                     "ok <path>"
   reset-graphics     put back the tuned graphics settings
   forget-steam       forget the saved Steam account (the window then shows a QR code)
   games              JSON: Halo 3 and Halo 3: ODST (installed or not, size, folder), MCC's size and free disk space
@@ -389,6 +390,28 @@ def remove_mod(wid):
     return "ok"
 
 
+def startup_evidence():
+    """What startup is doing, for the report: (readable lines, the startup state's own answer).
+
+    Startup-state is the one source of truth for this (the window reads the same answer), so the report carries it
+    rather than working anything out again. A probe that cannot answer must not stop the report being made, so the
+    lines say so and there is no data to attach.
+    """
+    try:
+        state = json.loads(startup_state())
+        cache, elapsed = state["forge_cache"], state["elapsed_s"]
+        when = f"{elapsed} s elapsed" if elapsed is not None else "not running"
+        writes = "cache written this run" if state["wrote_this_run"] else "no cache writes this run"
+        files = "file" if cache["files"] == 1 else "files"
+        last = (f"last write {cache['newest_age_s']} s ago" if cache["newest_age_s"] is not None
+                else "never written")
+        return [f"Startup: {state['state']}, {when} (stall threshold {state['stall_after_s']} s, {writes})",
+                "Startup detail: " + state["detail"],
+                f"Forge cache: {cache['bytes']} bytes in {cache['files']} {files}, {last}"], state
+    except Exception:  # (an unreadable startup state is not a reason to withhold the logs)
+        return ["Startup: unknown (the startup check failed)"], None
+
+
 def report():
     account = ""
     try:
@@ -398,7 +421,9 @@ def report():
 
     def scrub(text):
         return text.replace(account, "<steam account>") if account else text
-    summary = [f"Project Reclaimer Mac Port report, {time.strftime('%Y-%m-%d %H:%M')}"]
+    startup_lines, startup = startup_evidence()
+    summary = [f"Project Reclaimer Mac Port report, {time.strftime('%Y-%m-%d %H:%M')}"] + startup_lines
+
     for label, cmd in [("macOS", ["sw_vers", "-productVersion"]), ("Mac", ["sysctl", "-n", "machdep.cpu.brand_string"]),
                        ("Memory", ["sysctl", "-n", "hw.memsize"])]:
         value = subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
@@ -415,6 +440,8 @@ def report():
     path = DESKTOP / f"Project Reclaimer report {time.strftime('%Y-%m-%d %H.%M')}.zip"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("summary.txt", scrub("\n".join(summary) + "\n"))
+        if startup is not None:  # (the same evidence the window shows, as data a maintainer can read)
+            z.writestr("startup-state.json", scrub(json.dumps(startup, indent=2)) + "\n")
         for log in sorted(LOGS.glob("*.log")):
             z.writestr(f"logs/{log.name}", scrub(log.read_text(errors="replace")[-2_000_000:]))
     return f"ok {path}"

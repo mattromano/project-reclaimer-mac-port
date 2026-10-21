@@ -400,10 +400,14 @@ class ToolsTest(unittest.TestCase):
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
                                  "project-reclaimer-v9.9.99.exe game-client"])
         try:
-            self.assertEqual(self.run_tool("repair")[1][-1], "error: Quit the game first.")
-            for args in (["add-game", "odst"], ["remove-game", "odst"], ["repair-game", "halo3"]):
-                self.assertEqual(self.run_tool(*args)[1][-1], "error: Quit the game first.", args)
-            self.assertEqual(self.run_tool("reset-graphics")[1][-1], "error: Quit the game first.")
+            tools = self.load()  # (in-process, so the free-space check can be stubbed as in the add-games tests)
+            with mock.patch.object(tools.helper(), "game_download", return_value="ok"), \
+                    mock.patch.object(tools.shutil, "disk_usage", return_value=mock.Mock(free=200 * 10**9)):
+                self.assertEqual(tools.repair(), "error: Quit the game first.")
+                self.assertEqual(tools.add_games(["odst"]), "error: Quit the game first.")
+                self.assertEqual(tools.remove_game("odst"), "error: Quit the game first.")
+                self.assertEqual(tools.repair_game("halo3"), "error: Quit the game first.")
+                self.assertEqual(tools.reset_graphics(), "error: Quit the game first.")
         finally:
             game.kill()
 

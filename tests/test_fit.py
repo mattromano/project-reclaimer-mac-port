@@ -51,6 +51,28 @@ class TierTest(unittest.TestCase):
     def test_standard_falls_back_when_the_screen_is_short(self):
         self.assertEqual(fit.window(dict(BIG, screen=[1440, 900])), (1280, 720, "r720p"))
 
+    def test_facts_name_what_the_installer_and_launcher_ask_for(self):
+        f = fit.facts(SMALL)
+        self.assertEqual(f["tier"], "constrained")
+        self.assertEqual((f["ram_gb"], f["screen_w"], f["screen_h"]), (8, 2560, 1440))
+
+    def test_macos_major(self):
+        self.assertEqual(fit.macos_major({"macos": "14.5"}), 14)
+        self.assertEqual(fit.macos_major({"macos": ""}), 0)
+
+    def test_get_prints_one_fact(self):
+        original, fit.machine = fit.machine, lambda home=None: SMALL
+        self.addCleanup(setattr, fit, "machine", original)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(fit.main(["--get", "tier"]), 0)
+        self.assertEqual(out.getvalue().strip(), "constrained")
+
+    def test_get_rejects_an_unknown_fact(self):
+        original, fit.machine = fit.machine, lambda home=None: SMALL
+        self.addCleanup(setattr, fit, "machine", original)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(fit.main(["--get", "nonsense"]), 2)
+
 
 class PresetsTest(unittest.TestCase):
     """presets.py writes the settings; the tier must reach them."""

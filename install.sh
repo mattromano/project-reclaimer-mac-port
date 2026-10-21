@@ -163,6 +163,14 @@ chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.
   "$BASE/game/tools.py"
 note "ok"
 
+bold "This Mac"
+# fit.py is the one place that answers "how much Mac is this?"; the launcher's Setup reads the same script
+/usr/bin/python3 -I "$BASE/game/fit.py" || true
+if [ "$(/usr/bin/python3 -I "$BASE/game/fit.py" --get tier 2>/dev/null || true)" = constrained ]; then
+  note "Project Reclaimer recommends 16 GB of RAM. With less, the first Forge asset library build may not fit,"
+  note "and the game can sit on \"Building Asset Library\" for a long time. Everything else still works."
+fi
+
 bold "Project Reclaimer (latest release, checksum-verified)"
 # updater.py installs it as its own file and removes older ones; the game's own updater is off (see run.sh)
 RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/updater.py" game 2>>"$BASE/logs/launcher.log" |

@@ -82,6 +82,12 @@ final class SetupModel: ObservableObject {
         var list: [Check] = []
         let v = ProcessInfo.processInfo.operatingSystemVersion
         list.append(Check(id: "mac", title: "Apple Silicon Mac, macOS \(v.majorVersion)", ok: true, detail: ""))
+        if let fit = fitFacts(), let ram = fit["ram_gb"] as? Int, let tier = fit["tier"] as? String {
+            list.append(Check(id: "memory", title: "Memory: \(ram) GB (\(tier) tier)", ok: nil,
+                              detail: tier == "constrained"
+                                ? "Project Reclaimer recommends 16 GB. With \(ram) GB the first Forge asset library build may not fit, so the game can sit on \"Building Asset Library\" for a long time. You can still install."
+                                : ""))
+        }
         let halo = home.appendingPathComponent(
             "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection/halo3/halo3.dll")
         let copying = ProcessInfo.processInfo.environment["RECLAIMER_MCC_FROM"] != nil  // (install.sh skips it too)
@@ -114,6 +120,23 @@ final class SetupModel: ObservableObject {
     private func freeGigabytes() -> Double {
         let values = try? FileManager.default.homeDirectoryForCurrentUser.resourceValues(forKeys: [.volumeAvailableCapacityKey])
         return Double(values?.volumeAvailableCapacity ?? 0) / 1e9
+    }
+
+    /// What fit.py says about this Mac. Absent on a first run from the disk image (the scripts aren't installed yet),
+    /// and the window's checks must not depend on the network, so a missing script simply means no memory row.
+    private func fitFacts() -> [String: Any]? {
+        let script = home.appendingPathComponent("game/fit.py")
+        guard FileManager.default.fileExists(atPath: script.path) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-I", script.path, "--json"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     private func commandSucceeds(_ path: String, _ args: [String]) -> Bool {

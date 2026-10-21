@@ -16,7 +16,7 @@ never finishes).
 What a tier cannot do: shrink the render target below 720p. The game accepts
 only r720p, r900p, r1080p and r1440p, so 720p is the floor.
 
-Usage: fit.py [--json]
+Usage: fit.py [--json | --get KEY]
 """
 import json
 import os
@@ -72,6 +72,22 @@ def tier(m):
     return "constrained" if 0 < ram < RECOMMENDED_RAM_GB else "standard"
 
 
+def macos_major(m):
+    try:
+        return int(str(m.get("macos", "")).split(".")[0])
+    except ValueError:
+        return 0
+
+
+def facts(m):
+    """The machine as flat named values: what the installer and the launcher ask for by name."""
+    return {"arch": m.get("arch", ""), "macos": m.get("macos", ""), "macos_major": macos_major(m),
+            "ram_gb": m.get("ram_gb", 0), "cores": m.get("cores", 0),
+            "free_disk_gb": m.get("free_disk_gb", 0),
+            "screen_w": m.get("screen", [0, 0])[0], "screen_h": m.get("screen", [0, 0])[1],
+            "tier": tier(m)}
+
+
 def window(m):
     """The window and render size for this machine. A constrained Mac is held at 720p even
     when its screen is larger, because the memory it saves is the memory the game needs."""
@@ -85,6 +101,14 @@ def main(argv):
     m = machine()
     if "--json" in argv:
         print(json.dumps(dict(m, tier=tier(m)), sort_keys=True))
+    elif "--get" in argv:
+        index = argv.index("--get")
+        key = argv[index + 1] if index + 1 < len(argv) else ""
+        values = facts(m)
+        if key not in values:
+            print(f"unknown key {key!r}; one of: {', '.join(values)}", file=sys.stderr)
+            return 2
+        print(values[key])
     else:
         w, h, res = window(m)
         print(f"{tier(m)}: {m['ram_gb']} GB RAM, {m['cores']} cores, {m['free_disk_gb']} GB free, "

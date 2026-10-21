@@ -7,6 +7,8 @@
   audio-check        where the Mac's sound goes, tab-separated: "ok <output>", "muted <output>", "virtual <output>"
                      or "headset <headphones> <output>" (the game keeps the output it starts with)
   crash-check        "crash: <plain explanation>" if the last game log shows a crash, else "ok"
+  startup-state      JSON: whether startup is progressing: "starting", "building", "ready", "stalled" or "stopped",
+                     with the Forge cache's progress and the log markers behind that verdict
   force-quit         stop the game, Wine and wineserver for this install (frozen windows Force Quit can't close)
   mods               JSON: downloaded Workshop mods with titles and sizes, plus free disk space
   remove-mod <id>    delete one downloaded mod (not while the game runs)
@@ -55,6 +57,12 @@ DAEMON_PLIST = f"/Library/LaunchDaemons/{DAEMON}.plist"
 INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST))  # (tests point it elsewhere)
 DAEMON_DIR = "/Library/Application Support/ProjectReclaimer"
 DRYRUN = os.environ.get("RECLAIMER_TOOLS_DRYRUN", "")  # "1": print admin commands; "cancel": as if cancelled
+# How long the Forge asset library may write nothing before startup is called stalled. The first build takes about a
+# minute on the hardware it was tuned for; three minutes of no writes means it is not going to finish on its own.
+try:
+    FORGE_STALL_SECONDS = int(os.environ.get("RECLAIMER_STALL_SECONDS") or 180)
+except ValueError:  # (a hand-set override shouldn't stop the Tools menu working)
+    FORGE_STALL_SECONDS = 180
 
 
 def loopback_prefixes():
@@ -223,6 +231,105 @@ def crash_check():
         if marker in text:
             return "crash: " + message
     return "ok"
+
+
+STARTUP_DETAIL = {
+    "starting": "The game is starting.",
+    "building": "Building the Forge asset library. The first start takes a while.",
+    "ready": "The game is up.",
+    "stalled": "Startup stopped progressing: the Forge asset library has written nothing since the game started. "
+               "That build needs more free memory than this Mac has available; quit other apps and try again.",
+    "stopped": "The game isn't running.",
+}
+
+
+def prefix_user():
+    """The Wine prefix's user folder: Reclaimer's own AppData lives under it."""
+    users = BASE / "prefix-wine" / "drive_c" / "users"
+    try:
+        found = [u for u in users.iterdir() if u.name != "Public"]
+    except OSError:
+        return None
+    return found[0] if found else None
+
+
+def forge_cache():
+    """Reclaimer's Forge asset library: %LOCALAPPDATA%\\ProjectReclaimer\\forge-maps."""
+    user = prefix_user()
+    return None if user is None else user / "AppData" / "Local" / "ProjectReclaimer" / "forge-maps"
+
+
+def cache_progress(folder):
+    """The build's only visible progress: what it has written, and when it last wrote."""
+    info, newest = {"bytes": 0, "files": 0, "newest_age_s": None}, None
+    if folder is None or not folder.is_dir():
+        return info, newest
+    for path in folder.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:  # (the game may be replacing it as we look)
+            continue
+        info["bytes"] += stat.st_size
+        info["files"] += 1
+        newest = stat.st_mtime if newest is None else max(newest, stat.st_mtime)
+    if newest is not None:
+        info["newest_age_s"] = round(time.time() - newest)
+    return info, newest
+
+
+def game_elapsed_seconds():
+    """How long the game client has been running, or None if it isn't."""
+    pids = subprocess.run(["pgrep", "-f", GAME_PROCESS], capture_output=True, text=True).stdout.split()
+    if not pids:
+        return None
+    stamp = subprocess.run(["ps", "-o", "etime=", "-p", pids[0]], capture_output=True, text=True).stdout.strip()
+    if not stamp:
+        return None
+    days = 0
+    if "-" in stamp:
+        day, stamp = stamp.split("-", 1)
+        days = int(day)
+    parts = [int(p) for p in stamp.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    hours, minutes, seconds = parts[-3:]
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def startup_state():
+    """Whether startup is progressing, or a named stall, instead of waiting on a window that looks busy.
+
+    Reclaimer builds its Forge asset library while the game starts and shows "BUILDING ASSET LIBRARY" until it is
+    done. On a Mac too small to hold the build, it can write nothing for half an hour while the window spins, so the
+    process being alive says nothing. This reads the cache's progress and the log's markers instead.
+    """
+    try:
+        text = (LOGS / "client-wine.log").read_text(errors="replace")[-400000:]
+    except OSError:
+        text = ""
+    markers = {"build_started": "Forge library: building it while the game starts" in text,
+               "menu_loaded": '"map_loaded":true' in text,
+               "overlay_finished": "Menu loading screen finished" in text}
+    elapsed = game_elapsed_seconds()
+    cache, newest_write = cache_progress(forge_cache())
+    started_at = None if elapsed is None else time.time() - elapsed
+    wrote_this_run = newest_write is not None and started_at is not None and newest_write >= started_at
+    if elapsed is None:
+        state = "stopped"
+    elif markers["overlay_finished"]:
+        state = "ready"
+    elif markers["build_started"] and elapsed >= FORGE_STALL_SECONDS and not wrote_this_run:
+        state = "stalled"
+    elif markers["build_started"]:
+        state = "building"
+    else:
+        state = "starting"
+    return json.dumps({"state": state, "detail": STARTUP_DETAIL[state], "elapsed_s": elapsed,
+                       "stall_after_s": FORGE_STALL_SECONDS, "wrote_this_run": wrote_this_run,
+                       "forge_cache": cache, "markers": markers})
+
 
 
 def force_quit():
@@ -492,7 +599,8 @@ def uninstall():
 
 
 COMMANDS = {"net-check": net_check, "net-fix": net_fix, "controller-check": controller_check,
-            "audio-check": audio_check, "crash-check": crash_check, "force-quit": force_quit, "mods": mods,
+            "audio-check": audio_check, "crash-check": crash_check, "startup-state": startup_state,
+            "force-quit": force_quit, "mods": mods,
             "report": report, "reset-graphics": reset_graphics, "forget-steam": forget_steam, "repair": repair,
             "games": games, "uninstall": uninstall}
 

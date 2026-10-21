@@ -203,6 +203,67 @@ class ToolsTest(unittest.TestCase):
         log.write_text("thread 'main' panicked at src/thing.rs:1:2:\nboom\n")
         self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: Project Reclaimer hit an error"))
 
+    # ---- startup state (the watchdog) --------------------------------------------------------------------------
+
+    def start_fake_game(self):
+        game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                 "project-reclaimer-v9.9.99.exe game-client"])
+
+        def stop():  # (kill and reap, so no ResourceWarning about a still-running child)
+            game.kill()
+            game.wait()
+
+        self.addCleanup(stop)
+        time.sleep(0.2)  # (pgrep needs the process to have registered)
+        return game
+
+    def write_log(self, text):
+        (self.home / "logs" / "client-wine.log").write_text(text)
+
+    def write_cache(self, payload=b""):
+        """A Forge cache file under the prefix user, the way the build writes them."""
+        folder = (self.home / "prefix-wine/drive_c/users/player/AppData/Local/ProjectReclaimer"
+                  "/forge-maps/virtual/x")
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "130_epilogue.map").write_bytes(payload)
+        return folder
+
+    def startup(self, **env):
+        return json.loads(self.run_tool("startup-state", **env)[1][-1])
+
+    def test_startup_state_is_stopped_when_the_game_is_not_running(self):
+        self.write_log("Forge library: building it while the game starts.\n")
+        self.assertEqual(self.startup()["state"], "stopped")
+
+    def test_startup_state_is_ready_once_the_loading_screen_finishes(self):
+        self.start_fake_game()
+        self.write_log("Menu loading screen finished.\n")
+        self.assertEqual(self.startup()["state"], "ready")
+
+    def test_startup_state_is_building_while_the_library_is_written(self):
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        self.assertEqual(self.startup()["state"], "building")
+
+    def test_startup_state_names_a_stall_when_nothing_is_written_this_run(self):
+        self.write_cache()  # (a leftover from an earlier run: nothing written since this start)
+        time.sleep(1.2)  # (ps reports elapsed in whole seconds, so make the ordering unambiguous)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        state = self.startup(RECLAIMER_STALL_SECONDS="0")
+        self.assertEqual(state["state"], "stalled")
+        self.assertFalse(state["wrote_this_run"])
+        self.assertIn("Forge asset library", state["detail"])
+
+    def test_startup_state_is_not_stalled_while_the_cache_is_writing(self):
+        self.start_fake_game()
+        time.sleep(1.2)  # (as above: the write has to be clearly after the start)
+        self.write_log("Forge library: building it while the game starts.\n")
+        self.write_cache(payload=b"x" * 10)  # (written after this start)
+        state = self.startup(RECLAIMER_STALL_SECONDS="0")
+        self.assertTrue(state["wrote_this_run"])
+        self.assertEqual(state["state"], "building")
+
     # ---- mods --------------------------------------------------------------------------------------------------
     def test_mods_lists_titles_sizes_and_free_space(self):
         self.add_mod("111", "Warlock", 3000)

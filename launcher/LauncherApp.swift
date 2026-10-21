@@ -91,7 +91,7 @@ final class LineProcess {
         let url = home.appendingPathComponent("logs/launcher.log")
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         // O_APPEND: the launcher and the scripts write to it at the same time
-        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)  // (only this user: it names their Steam account)
         return fd < 0 ? nil : FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 }

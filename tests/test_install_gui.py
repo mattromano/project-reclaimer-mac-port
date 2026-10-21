@@ -83,5 +83,27 @@ class InstallGuiTest(unittest.TestCase):
         self.assertTrue(errors, "the install ended without an error line")
 
 
+
+class UninstallTest(unittest.TestCase):
+    def test_refuses_a_folder_that_isnt_an_install(self):
+        # uninstall.sh deletes RECLAIMER_HOME with rm -rf: RECLAIMER_HOME=~ (or a typo) must not delete a home folder.
+        # (It stops before its pkill lines, so nothing else on this Mac is touched.)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "notes.txt").write_text("keep me")
+        env = dict(os.environ, RECLAIMER_HOME=str(tmp), RECLAIMER_APPS_DIR=str(tmp / "apps"), RECLAIMER_YES="1",
+                   RECLAIMER_KEEP_NETWORK="1")
+        p = subprocess.run(["/bin/bash", str(REPO / "uninstall.sh")], env=env, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("doesn't look like a Project Reclaimer install", p.stderr)
+        self.assertEqual((tmp / "notes.txt").read_text(), "keep me")
+
+    def test_downloads_stay_on_https(self):
+        text = (REPO / "install.sh").read_text()
+        self.assertIn("--proto =https --proto-redir =https", text)
+        self.assertIn("chmod 700", text)
+
+
 if __name__ == "__main__":
     unittest.main()

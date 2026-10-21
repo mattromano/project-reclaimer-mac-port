@@ -8,6 +8,7 @@ import UserNotifications
 enum Step: Equatable {
     case waiting, working(String), done(String), warning(String), failed(String)
     var finished: Bool { if case .waiting = self { return false }; if case .working = self { return false }; return true }
+    var isWarning: Bool { if case .warning = self { return true }; return false }
 }
 
 @MainActor
@@ -50,7 +51,8 @@ final class Launcher: ObservableObject {
     @Published var network: Step? { didSet { if network != oldValue, let n = network { log("network: \(n)") } } }
     @Published var controllers: Step? { didSet { if controllers != oldValue, let c = controllers { log("controllers: \(c)") } } }
     /// Where the Mac's sound goes: the game keeps that output once it starts, so it is shown (and warned about) before Play.
-    @Published var sound: Step? { didSet { if sound != oldValue, let s = sound { log("sound: \(s)") } } }
+    // (logged without device names, which go into reports people send: "Chris AirPods Pro")
+    @Published var sound: Step? { didSet { if sound != oldValue, let s = sound { log("sound: \(s.finished ? s.isWarning ? "warning" : "ok" : "checking")") } } }
     /// fit.py's tier says this Mac is below the recommended memory: what the first start will do, said before Play.
     /// nil on a standard Mac, and when fit.py couldn't answer at all.
     @Published var memoryNotice: String? { didSet { if memoryNotice != oldValue, let n = memoryNotice { log("memory notice: \(n)") } } }

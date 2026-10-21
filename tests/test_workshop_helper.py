@@ -287,6 +287,29 @@ class HelperTest(unittest.TestCase):
             h.watch()
         self.assertEqual([c.args[0] for c in fetch.call_args_list], ["Warlock"])  # (an ordinary mod still is)
 
+    def test_workshop_ids_are_digits_only(self):
+        # a ModInfo.json from a server names its own SteamWorkshopId; "123/../../x" went into folder paths
+        # (security review, M2). Steam's API even accepts it, reading only the leading digits.
+        mods = self.home / "prefix-wine" / "drive_c" / "users" / "p" / "Documents" / "My Games" / "Project Reclaimer" / "Mods" / "x"
+        mods.mkdir(parents=True)
+        (mods / "ModInfo.json").write_text(json.dumps({"Title": {"Neutral": "Evil"}, "ModIdentifier": {
+            "HostedModIds": {"SteamWorkshopId": "2984061723/../../../../Library/LaunchAgents"}}}))
+        h = self.load()
+        with mock.patch.object(h, "id_from_search", return_value=None):
+            self.assertIsNone(h.resolve("Evil"))
+        self.assertEqual(h.resolve("2984061723"), "2984061723")
+        for bad in ("/etc/x", "12/../3", "١٢٣", ""):  # (Arabic-Indic digits pass str.isdigit)
+            self.assertFalse(h.valid_workshop_id(bad), bad)
+        with mock.patch.object(h, "notify"):
+            self.assertFalse(h.fetch("/tmp/evil"))
+        self.assertFalse(any(Path("/tmp").glob("evil*.lock")))
+
+    def test_steam_account_file_is_private(self):
+        h = self.load()
+        h.save_account("RealName_1")
+        self.assertEqual(oct((self.home / "steam-account").stat().st_mode & 0o777), "0o600")
+        self.assertEqual((self.home / "steam-account").read_text(), "RealName_1\n")
+
     def test_no_account_dialog_or_terminal_left_in_the_helper(self):
         source = HELPER.read_text()
         self.assertNotIn("display dialog", source)

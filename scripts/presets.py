@@ -12,15 +12,18 @@ Then capped at 60 fps. Reclaimer accepts only uniform "low"/"high" detail preset
 Which window and render size a machine gets comes from fit.py: a constrained
 Mac (under the recommended RAM) is held at 720p even when its screen is bigger.
 """
+import importlib.util
 import json
 import os
 import sys
 from pathlib import Path
 
-# The installer copies these scripts side by side and runs them as
-# `/usr/bin/python3 -I`, which leaves the script's own directory off sys.path.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import fit  # noqa: E402
+# The installer copies these scripts side by side and runs them as `/usr/bin/python3 -I`, which leaves the script's own
+# folder off sys.path. fit.py is loaded by its exact path instead of adding that folder to sys.path, which would let any
+# file there named like a module (e.g. subprocess.py) load in place of it.
+_spec = importlib.util.spec_from_file_location("fit", Path(__file__).resolve().parent / "fit.py")
+fit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fit)
 
 BASE = Path(os.environ.get("RECLAIMER_HOME", Path.home() / "Games" / "ProjectReclaimer"))
 PREFIXES = {"wine": BASE / "prefix-wine"}

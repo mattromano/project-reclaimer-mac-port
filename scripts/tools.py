@@ -29,6 +29,7 @@
 Each prints "ok" (or its result) last, or "error: <plain reason>". RECLAIMER_TOOLS_DRYRUN=1 prints admin commands
 ("dry-run admin: ...") instead of asking for the password, for tests.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -56,7 +57,11 @@ GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-
 DAEMON = "local.projectreclaimer.loopback"
 DAEMON_PLIST = f"/Library/LaunchDaemons/{DAEMON}.plist"
 INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST))  # (tests point it elsewhere)
-DAEMON_DIR = "/Library/Application Support/ProjectReclaimer"
+DAEMON_DIR = os.environ.get("RECLAIMER_TEST_DAEMON_DIR", "/Library/Application Support/ProjectReclaimer")  # (tests)
+# what the root startup task must be: checked as root after copying it where only root can write (also in install.sh;
+# tests/test_tools.py checks all four match scripts/)
+LOOPBACK_SHA = "23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83"
+LOOPBACK_PLIST_SHA = "27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd"
 DRYRUN = os.environ.get("RECLAIMER_TOOLS_DRYRUN", "")  # "1": print admin commands; "cancel": as if cancelled
 # How long the Forge asset library may write nothing before startup is called stalled. The first build takes about a
 # minute on the hardware it was tuned for; three minutes of no writes means it is not going to finish on its own.
@@ -91,9 +96,15 @@ def as_admin(command, prompt):
     if DRYRUN:
         say("dry-run admin: " + command)
         return DRYRUN != "cancel"
-    script = 'do shell script {} with prompt {} with administrator privileges'.format(
-        json.dumps(command), json.dumps(prompt))
-    return subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True).returncode == 0
+    return subprocess.run(["/usr/bin/osascript", "-e", admin_script(command, prompt)],
+                          capture_output=True).returncode == 0
+
+
+def admin_script(command, prompt):
+    """AppleScript running a shell command as root behind macOS's password dialog. JSON string syntax is AppleScript's
+    too, but only with non-ASCII left as is: AppleScript has no \\u escape (a path with é made net-fix fail)."""
+    return 'do shell script {} with prompt {} with administrator privileges'.format(
+        json.dumps(command, ensure_ascii=False), json.dumps(prompt, ensure_ascii=False))
 
 
 def game_running():
@@ -119,6 +130,13 @@ def lo0():
     return subprocess.run(["/sbin/ifconfig", "lo0"], capture_output=True, text=True).stdout
 
 
+def file_sha256(path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def net_check():
     have = set(re.findall(r"inet (127\.\d+\.\d+\.\d+)", lo0()))
     return "ok" if all(a in have for a in EXPECTED_ALIASES) else "missing"
@@ -127,13 +145,21 @@ def net_check():
 def net_fix():
     """Install the startup task's files again and restart it, which re-adds every address (as install.sh does)."""
     script, plist = GAME / "reclaimer-loopback.sh", GAME / f"{DAEMON}.plist"
-    if not script.exists() or not plist.exists():
-        return "error: This install is missing its network files. Open Project Reclaimer again to update it."
-    command = (f"mkdir -p {quoted(DAEMON_DIR)} && "
-               f"install -o root -g wheel -m 755 {quoted(script)} {quoted(DAEMON_DIR + '/reclaimer-loopback.sh')} && "
-               f"install -o root -g wheel -m 644 {quoted(plist)} {DAEMON_PLIST} && "
-               f"{{ launchctl bootout system/{DAEMON} 2>/dev/null; true; }} && "
+    installed = Path(DAEMON_DIR) / "reclaimer-loopback.sh"
+    restart = (f"{{ launchctl bootout system/{DAEMON} 2>/dev/null; true; }} && "
                f"launchctl bootstrap system {DAEMON_PLIST}")
+    if file_sha256(installed) == LOOPBACK_SHA and file_sha256(INSTALLED_PLIST) == LOOPBACK_PLIST_SHA:
+        command = restart  # (root's own copy is right: nothing of the player's needs to go to root)
+    else:
+        if not script.exists() or not plist.exists():
+            return "error: This install is missing its network files. Open Project Reclaimer again to update it."
+        target = DAEMON_DIR + "/reclaimer-loopback.sh"
+        # copy first, then check the copies (now only root can change them) against what this script ships with
+        command = (f"mkdir -p {quoted(DAEMON_DIR)} && "
+                   f"install -o root -g wheel -m 755 {quoted(script)} {quoted(target)} && "
+                   f"install -o root -g wheel -m 644 {quoted(plist)} {DAEMON_PLIST} && "
+                   f"{{ printf '%s  %s\\n' {LOOPBACK_SHA} {quoted(target)} {LOOPBACK_PLIST_SHA} {DAEMON_PLIST} | "
+                   f"shasum -a 256 -c -s || {{ rm -f {quoted(target)} {DAEMON_PLIST}; false; }}; }} && " + restart)
     if not as_admin(command, "Project Reclaimer is fixing its network settings."):
         return "error: The network setup wasn't fixed (the password box was cancelled)."
     if DRYRUN:
@@ -374,7 +400,7 @@ def mods():
 
 
 def remove_mod(wid):
-    if not wid.isdigit():
+    if not (wid.isascii() and wid.isdigit()):
         return "error: That isn't a Workshop item."
     if game_running():
         return "error: Quit the game first."
@@ -420,7 +446,11 @@ def report():
         pass
 
     def scrub(text):
-        return text.replace(account, "<steam account>") if account else text
+        if account:
+            text = text.replace(account, "<steam account>")
+        # (and names logged before a Forget Steam, and the Mac's user name in paths)
+        text = re.sub(r"(-username|Signed in as|login with -username) \S+", r"\1 <steam account>", text)
+        return text.replace(str(HOME), "~")
     startup_lines, startup = startup_evidence()
     summary = [f"Project Reclaimer Mac Port report, {time.strftime('%Y-%m-%d %H:%M')}"] + startup_lines
 
@@ -544,12 +574,33 @@ def remove_game(gid):
 ADDRESS = re.compile(r"[A-Za-z0-9.-]+:\d{1,5}")
 
 
+def controller_mappings_file():
+    """Bundled database, plus any user calibrations from the launcher (as run.sh does)."""
+    bundled = GAME / "gamecontrollerdb.txt"
+    user = BASE / "controller-mappings.txt"
+    db = bundled
+    if user.is_file():
+        db = BASE / "controller-mappings-active.txt"
+        parts = []
+        if bundled.is_file():
+            parts.append(bundled.read_text("utf-8", errors="ignore"))
+        parts.append(user.read_text("utf-8", errors="ignore"))
+        try:
+            db.write_text("\n".join(parts), "utf-8")
+        except OSError:
+            pass
+    return str(db) if db.is_file() and db.stat().st_size > 0 else None
+
+
 def game_env():
     """Wine settings as run.sh uses them, for asking the game something without opening it."""
     env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), WINEDEBUG="-all", MVK_CONFIG_LOG_LEVEL="0",
                WINEDLLOVERRIDES="opengl32=n,b;xaudio2_9=d;d3d11,d3d10core=n,b")
     # ~/.zshenv may inject an arm64 DYLD shim (libnomallocstacklogging) globally; Wine runs as an x86_64/Rosetta binary.
     env.pop("DYLD_INSERT_LIBRARIES", None)
+    db = controller_mappings_file()
+    if db:
+        env["SDL_GAMECONTROLLERCONFIG_FILE"] = db
     return env
 
 
@@ -591,7 +642,9 @@ def server_version(address):
     version = str(info.get("version") or "")
     if not re.fullmatch(r"\d+(\.\d+){1,3}", version):
         return "unreachable"
-    return f"{version} {info.get('name') or address}".strip()
+    name = " ".join(str(info.get("name") or address).split())  # (the server's to choose: one line, no control chars)
+    name = "".join(c for c in name if c.isprintable())
+    return f"{version} {name}".strip()
 
 
 def join(address):

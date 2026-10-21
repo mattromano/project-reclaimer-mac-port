@@ -32,6 +32,14 @@ export DXVK_LOG_LEVEL=${DXVK_LOG_LEVEL:-warn}
 export MVK_CONFIG_LOG_LEVEL=1
 [ -n "$RECLAIMER_NO_AUDIO" ] && WINEDLLOVERRIDES="$WINEDLLOVERRIDES;winecoreaudio.drv=d"  # troubleshooting only
 
+# Controller mappings: bundled database, plus any user calibrations from the launcher
+DB="$BASE/game/gamecontrollerdb.txt"
+if [ -f "$BASE/controller-mappings.txt" ]; then
+  DB="$BASE/controller-mappings-active.txt"
+  cat "$BASE/game/gamecontrollerdb.txt" "$BASE/controller-mappings.txt" 2>/dev/null > "$DB"
+fi
+[ -s "$DB" ] && export SDL_GAMECONTROLLERCONFIG_FILE="$DB"
+
 cd "$BASE/game" || exit 1
 # an older release the player chose for servers that haven't updated (Tools > Game version), started from its own
 # folder, where its copy of the menu's graphics library sits; otherwise the newest

@@ -40,6 +40,21 @@ HOME = Path.home()
 BASE = Path(os.environ.get("RECLAIMER_HOME", HOME / "Games" / "ProjectReclaimer"))
 LOG = Path(os.environ.get("RECLAIMER_LOG", BASE / "logs" / "client.log"))
 ACCOUNT_FILE = BASE / "steam-account"
+WORKSHOP_ID = re.compile(r"[0-9]{1,20}")
+
+
+def valid_workshop_id(wid):
+    """A Workshop ID is ASCII digits and nothing else. IDs go into folder and file paths, and a server's own
+    ModInfo.json names one: "123/../../x" must never get that far."""
+    return isinstance(wid, str) and wid.isascii() and WORKSHOP_ID.fullmatch(wid) is not None
+
+
+def save_account(name):
+    """The Steam account name, readable only by this user (other accounts on the Mac can read the home folder)."""
+    fd = os.open(ACCOUNT_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # (an older file kept its looser mode through O_CREAT)
+    with os.fdopen(fd, "w") as f:
+        f.write(name + "\n")
 STATUS_DIR = BASE / "logs" / "mods"
 DEPOT = BASE / "tools" / "DepotDownloader"
 WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" / "steamapps" / "workshop"
@@ -189,7 +204,7 @@ def run_relaying(cmd, stop_at_login=False, on_line=None):
             m = QR_SUCCESS.search(line)
             if m:
                 name = m.group(1)
-                ACCOUNT_FILE.write_text(name + "\n")
+                save_account(name)
             if stop_at_login and name and re.match(r"Got \d+ licenses", line):
                 p.terminate()
                 break
@@ -331,9 +346,12 @@ def id_from_search(title):
 
 
 def resolve(item):
-    if item.isdigit():
+    if valid_workshop_id(item):
         return item
-    return id_from_modinfo(item) or id_from_search(item)
+    for wid in (id_from_modinfo(item), id_from_search(item)):  # (a server's ModInfo.json can name any "ID")
+        if valid_workshop_id(wid):
+            return wid
+    return None
 
 
 # written only after DepotDownloader finishes the whole item; holds the Workshop version that was downloaded
@@ -387,7 +405,8 @@ def write_manifest():
     Reclaimer only treats a Workshop mod as installed and current when this manifest lists it with the downloaded
     version (time updated, content manifest) matching Steam's latest; without the Steam client nothing writes it.
     An outdated copy is listed as such, so the game asks for it again and the helper downloads the update."""
-    wids = sorted(d.name for d in WORKSHOP.iterdir() if d.is_dir() and (d / DONE).exists()) if WORKSHOP.exists() else []
+    wids = sorted(d.name for d in WORKSHOP.iterdir()
+                  if valid_workshop_id(d.name) and d.is_dir() and (d / DONE).exists()) if WORKSHOP.exists() else []
     if not wids:
         return
     details = {f["publishedfileid"]: f for f in workshop_details(wids) if f.get("result") == 1}
@@ -478,7 +497,7 @@ def stop_on_exit(proc):
 
 def fetch(item, ready_hint="Press Try Again in the game."):
     wid = resolve(item)
-    if not wid:
+    if not valid_workshop_id(wid):
         notify(f"Could not find {item} on Steam Workshop.")
         return False
     # one download per item: the in-game helper and a pasted link in the window may ask for the same mod

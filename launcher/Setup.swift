@@ -174,13 +174,14 @@ final class SetupModel: ObservableObject {
         let bootstrap = """
             raw=${RECLAIMER_REPO_RAW:-}
             if [ -z "$raw" ]; then
-              sha=$(/usr/bin/curl -fsS --connect-timeout 15 -H 'Accept: application/vnd.github.sha' \\
+              sha=$(/usr/bin/curl -fsS --proto =https --connect-timeout 15 -H 'Accept: application/vnd.github.sha' \\
                 https://api.github.com/repos/mattromano/project-reclaimer-mac-port/commits/main 2>/dev/null)
               case "$sha" in *[!0-9a-f]*|'') sha=main ;; esac
               raw=https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/$sha
             fi
-            f=${TMPDIR:-/tmp}/project-reclaimer-install.sh
-            /usr/bin/curl -fsSL --connect-timeout 20 --speed-limit 1024 --speed-time 60 "$raw/install.sh" -o "$f" ||
+            f=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/project-reclaimer-install.XXXXXX") ||
+              { echo "error: Couldn't make a temporary file for the installer."; exit 1; }
+            /usr/bin/curl -fsSL --proto =https --proto-redir =https --connect-timeout 20 --speed-limit 1024 --speed-time 60 "$raw/install.sh" -o "$f" ||
               { echo "error: Couldn't download the installer. Check your internet connection and try again."; exit 1; }
             RECLAIMER_REPO_RAW="$raw" RECLAIMER_GUI=1 \(withODST && offersODST ? "RECLAIMER_ODST=1 " : "")exec /bin/bash "$f"
             """

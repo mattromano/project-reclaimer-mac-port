@@ -1,0 +1,27 @@
+# Every pull request and every push to main runs the same checks a maintainer runs by hand (see AGENTS.md).
+# macOS only: the port, its scripts and its tests are macOS-specific.
+name: checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Python tests
+        run: /usr/bin/python3 -I -m unittest discover -s tests
+      - name: Launcher type-check
+        run: swiftc -typecheck -target arm64-apple-macos14.0 -swift-version 5 -parse-as-library launcher/*.swift
+      - name: Launcher tests
+        run: scripts/make_launcher.sh test
+      - name: Pinned launcher checksum matches the committed launcher
+        run: |
+          pinned=$(sed -n 's/^LAUNCHER_SHA=\([0-9a-f]*\).*/\1/p' install.sh)
+          actual=$(shasum -a 256 launcher/ProjectReclaimer | cut -d' ' -f1)
+          echo "pinned $pinned"; echo "actual $actual"
+          [ "$pinned" = "$actual" ] || { echo "::error::install.sh LAUNCHER_SHA doesn't match launcher/ProjectReclaimer: every install and update would refuse it"; exit 1; }

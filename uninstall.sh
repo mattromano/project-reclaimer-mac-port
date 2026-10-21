@@ -13,9 +13,14 @@ if [ -z "${RECLAIMER_YES:-}" ]; then
   [[ "$a" =~ ^[Yy] ]] || exit 0
 fi
 
+# rm -rf below: only a folder that is an install (RECLAIMER_HOME=~ must never delete the home folder)
+if [ "$BASE" = / ] || [ "$BASE" = "$HOME" ] || { [ ! -d "$BASE/game" ] && [ ! -d "$BASE/prefix-wine" ]; }; then
+  echo "$BASE doesn't look like a Project Reclaimer install, so nothing was removed." >&2
+  exit 1
+fi
 pkill -f 'project-reclaimer-v[0-9.]+\.exe' 2>/dev/null || true
-pkill -f 'workshop_helper.py watch' 2>/dev/null || true
-pkill -f 'Project Reclaimer.app/Contents/MacOS/ProjectReclaimer' 2>/dev/null || true
+pkill -f "$BASE/game/workshop_helper.py" 2>/dev/null || true
+pkill -f "$APPS/Project Reclaimer.app/Contents/MacOS/ProjectReclaimer" 2>/dev/null || true
 # (the Metal app came from older versions of the installer)
 rm -rf "$APPS/Project Reclaimer.app" "$APPS/Project Reclaimer Metal.app" "$BASE"
 

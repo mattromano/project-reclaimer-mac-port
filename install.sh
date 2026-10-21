@@ -33,11 +33,15 @@ MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
-LAUNCHER_SHA=b855065152574ec45dea709d36c792dd3c9ef7620ee8c8a076d99c2cee64788b  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
+# the root startup task (scripts/reclaimer-loopback.sh and its plist): checked as root after they're copied where only
+# root can write, so a file swapped in the meantime never runs at boot (also in tools.py; the tests check all match)
+LOOPBACK_SHA=23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83
+LOOPBACK_PLIST_SHA=27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd
+LAUNCHER_SHA=c15000f1b528d509c1049c0c266ce004b19ad2e31d0cf4d91b625e4dd79b2cd6  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
 GUI=${RECLAIMER_GUI:-}
 # give up on a stalled connection instead of hanging (the launcher waits for this when updating)
-CURL_LIMITS="--connect-timeout 20 --speed-limit 1024 --speed-time 60"
+CURL_LIMITS="--connect-timeout 20 --speed-limit 1024 --speed-time 60 --proto =https --proto-redir =https"
 
 exec 3>&1  # the real output, for error lines from inside $(...) (the window reads them)
 STEP=starting
@@ -112,6 +116,7 @@ NEED_GB=45; [ -n "$ODST" ] && NEED_GB=54
 [ "$FREE_GB" -ge "$NEED_GB" ] || [ -n "${RECLAIMER_MCC_FROM:-}" ] || [ -n "$UPDATE" ] ||
   [ -f "$BASE/prefix-wine/$MCC_REL/halo3/halo3.dll" ] || die "Need about $NEED_GB GB free disk space (have ${FREE_GB} GB)."
 mkdir -p "$BASE"/{game,tools,logs} "$CACHE"
+chmod 700 "$BASE"  # (other accounts on this Mac can look into the home folder: the Steam login and logs stay private)
 if [ -n "$GUI" ]; then
   # anything failing without its own message still tells the window which step it was
   trap 'printf "error: Something went wrong at the step “%s”. Check your internet connection and disk space, then press Try Again.\n" "$STEP" >&3' ERR
@@ -157,7 +162,7 @@ note "ok"
 
 bold "Game scripts and Workshop mod helper"
 # (the network files are kept here too, so the window's network fix can reinstall the startup task)
-for f in run.sh launch.sh workshop_helper.py presets.py fit.py updater.py tools.py reclaimer-loopback.sh \
+for f in run.sh launch.sh gamecontrollerdb.txt workshop_helper.py presets.py fit.py updater.py tools.py reclaimer-loopback.sh \
          local.projectreclaimer.loopback.plist; do script_file "scripts/$f" "$BASE/game/$f"; done
 chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py" \
   "$BASE/game/tools.py"
@@ -270,6 +275,8 @@ if ! cmp -s "$T/reclaimer-loopback.sh" "$LB_DIR/reclaimer-loopback.sh" ||
   as_admin "mkdir -p '$LB_DIR' &&
     install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '$LB_DIR/reclaimer-loopback.sh' &&
     install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
+    { printf '%s  %s\\n' $LOOPBACK_SHA '$LB_DIR/reclaimer-loopback.sh' $LOOPBACK_PLIST_SHA /Library/LaunchDaemons/local.projectreclaimer.loopback.plist |
+      shasum -a 256 -c -s || { rm -f '$LB_DIR/reclaimer-loopback.sh' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist; false; }; } &&
     { launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null; true; } &&
     launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" \
     "Project Reclaimer is setting up the local network addresses the game needs." ||

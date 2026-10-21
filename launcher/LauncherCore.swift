@@ -555,6 +555,9 @@ func knownLayout(vendor: Int) -> [String: String]? {
                 "rightshoulder": "b\(GCButton.rightShoulder.rawValue)", "back": "b\(GCButton.back.rawValue)",
                 "start": "b\(GCButton.start.rawValue)", "guide": "b\(GCButton.guide.rawValue)",
                 "leftstick": "b\(GCButton.leftStick.rawValue)", "rightstick": "b\(GCButton.rightStick.rawValue)"]
+    case 0x057E:  // Nintendo
+        return ["a": "b0", "b": "b1", "x": "b2", "y": "b3", "leftshoulder": "b6", "rightshoulder": "b7",
+                "back": "b10", "start": "b11", "guide": "b12", "leftstick": "b13", "rightstick": "b14"]
     default: return nil
     }
 }
@@ -568,6 +571,27 @@ enum GCButton: Int, CaseIterable {
 /// controller service switches a PlayStation pad (DualSense, DualShock 4) to its full report, which isn't
 /// described in HID values, so the raw view showed no input at all (seen with a DualSense on 1.4.1).
 func readsThroughGameController(vendor: Int) -> Bool { vendor == 0x054C }
+
+/// SDL2-compatible GUID for macOS IOKit joystick driver.
+func sdlGuid(vendorId: Int, productId: Int, version: Int = 0) -> String {
+    String(format: "03000000%02x%02x0000%02x%02x0000%02x%02x0000",
+           vendorId & 0xff, (vendorId >> 8) & 0xff,
+           productId & 0xff, (productId >> 8) & 0xff,
+           version & 0xff, (version >> 8) & 0xff)
+}
+
+/// A device's reported name, safe as the name field of an SDL mapping line: no commas (field separators) or control
+/// characters (a newline would start a new mapping line, e.g. one for another pad's GUID).
+func sdlMappingName(_ raw: String?) -> String {
+    let cleaned = String((raw ?? "").map { $0 == "," || $0.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) } ? " " : $0 })
+        .split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+    return cleaned.isEmpty ? "Game Controller" : cleaned
+}
+
+/// SDL2-compatible wildcard GUID (crc=0, version=0, little-endian VID and PID).
+func sdlWildcardGuid(vendorId: Int, productId: Int) -> String {
+    sdlGuid(vendorId: vendorId, productId: productId, version: 0)
+}
 
 // MARK: - memory
 

@@ -300,6 +300,17 @@ class ToolsTest(unittest.TestCase):
         self.write_log("Forge library: building it while the game starts.\n")
         self.assertEqual(self.startup()["state"], "building")
 
+    def test_the_build_marker_survives_a_log_that_grows_past_a_tail_window(self):
+        # the marker is logged near the top; diagnostics later fill the file, which is what a real stall looks like.
+        # Reading only the last 400 KB lost it, so a stalled build decayed back to "starting".
+        self.write_cache()  # (left over from an earlier run: nothing written this run)
+        time.sleep(1.2)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n" + ("diagnostic line\n" * 40000))
+        state = self.startup(RECLAIMER_STALL_SECONDS="0")
+        self.assertTrue(state["markers"]["build_started"])
+        self.assertEqual(state["state"], "stalled")
+
     def test_startup_state_names_a_stall_when_nothing_is_written_this_run(self):
         self.write_cache()  # (a leftover from an earlier run: nothing written since this start)
         time.sleep(1.2)  # (ps reports elapsed in whole seconds, so make the ordering unambiguous)

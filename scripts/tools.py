@@ -324,6 +324,40 @@ def game_elapsed_seconds():
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
+STARTUP_MARKERS = {"build_started": b"Forge library: building it while the game starts",
+                   "menu_loaded": b'"map_loaded":true',
+                   "overlay_finished": b"Menu loading screen finished"}
+
+
+def startup_markers():
+    """Which startup markers the game has logged, anywhere in its log.
+
+    The log is scanned from the start, not from a tail window: the Forge build marker is logged near the top (byte
+    ~1,300 in the run that found this), so a 400 KB tail loses it once diagnostics fill the file — which made a
+    stalled build decay back to "starting". Chunks overlap by the longest marker so a match split across a boundary
+    still counts, and the scan stops once every marker is found.
+    """
+    found = {name: False for name in STARTUP_MARKERS}
+    overlap = b""
+    longest = max(len(needle) for needle in STARTUP_MARKERS.values())
+    try:
+        with open(LOGS / "client-wine.log", "rb") as log:
+            while True:
+                chunk = log.read(1 << 18)
+                if not chunk:
+                    break
+                window = overlap + chunk
+                for name, needle in STARTUP_MARKERS.items():
+                    if not found[name] and needle in window:
+                        found[name] = True
+                if all(found.values()):
+                    break
+                overlap = window[-(longest - 1):]
+    except OSError:
+        pass
+    return found
+
+
 def startup_state():
     """Whether startup is progressing, or a named stall, instead of waiting on a window that looks busy.
 
@@ -331,13 +365,7 @@ def startup_state():
     done. On a Mac too small to hold the build, it can write nothing for half an hour while the window spins, so the
     process being alive says nothing. This reads the cache's progress and the log's markers instead.
     """
-    try:
-        text = (LOGS / "client-wine.log").read_text(errors="replace")[-400000:]
-    except OSError:
-        text = ""
-    markers = {"build_started": "Forge library: building it while the game starts" in text,
-               "menu_loaded": '"map_loaded":true' in text,
-               "overlay_finished": "Menu loading screen finished" in text}
+    markers = startup_markers()
     elapsed = game_elapsed_seconds()
     cache, newest_write = cache_progress(forge_cache())
     started_at = None if elapsed is None else time.time() - elapsed

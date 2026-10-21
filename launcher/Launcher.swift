@@ -26,8 +26,23 @@ final class Launcher: ObservableObject {
             if playing { for n in modNotifications(before: oldValue, after: mods) { notify(n.title, n.body) } }
         }
     }
-    @Published var playing = false { didSet { if playing != oldValue { log("playing: \(playing)") } } }
+    @Published var playing = false {
+        didSet {
+            if playing != oldValue { log("playing: \(playing)") }
+            if !playing, oldValue { startupStopped() }
+        }
+    }
     @Published var gameError: String? { didSet { if let e = gameError { log("game error: \(e)") } } }
+    /// What startup is doing, from `tools.py startup-state`: the window reports starting, building the Forge asset
+    /// library (with how long), ready, stalled or stopped. nil (unreadable, or not playing): nothing is said about
+    /// startup, exactly as before this existed.
+    @Published var startup: StartupDisplay? {
+        didSet {
+            // (the elapsed time changes on every poll: log a state change, not a ticking clock)
+            guard startup?.title != oldValue?.title else { return }
+            log("startup: " + (startup.map { "\($0.title). \($0.detail)" } ?? "unreadable"))
+        }
+    }
     @Published var steamSlow = false  // the Steam check is taking long: offer Skip
     @Published var link = ""
     @Published var linkError: String?
@@ -79,6 +94,9 @@ final class Launcher: ObservableObject {
     private var helperRunning = false
     private var gameGoneSince: Date?
     private var windowless = WindowlessGame()  // a game that quit but left Wine running
+    private var startupPoll: LineProcess?      // `tools.py startup-state` while a game starts (one at a time)
+    private var startupPollSince: Date?
+    private var startupAnswer = ""             // the JSON line that poll printed
     private var timer: Timer?
     private var ticks = 0
     private var didStart = false
@@ -384,6 +402,7 @@ final class Launcher: ObservableObject {
             }
         }
         gameError = nil
+        startup = nil  // (the first poll fills it in)
         playing = true
         playedAt = Date()
         gameGoneSince = nil
@@ -391,6 +410,52 @@ final class Launcher: ObservableObject {
         game = LineProcess("/bin/zsh", [gameDir.appendingPathComponent("launch.sh").path],
                            onLine: { _ in }, onExit: { _ in })
         if game == nil { gameStopped(early: true) }
+    }
+
+    /// Ask `tools.py startup-state` what startup is doing: the command walks the Forge cache and lists processes, so
+    /// it runs off the main thread and one poll at a time. Its verdict is the window's only source: nothing here
+    /// infers "ready" from the game still running.
+    private func pollStartup() {
+        if let poll = startupPoll {
+            // a wedged probe would leave the line at a stale state: let it go and ask again next tick
+            guard let since = startupPollSince, Date().timeIntervalSince(since) > 30 else { return }
+            log("startup state didn't answer in 30 s: asking again")
+            poll.stop()
+            startupPoll = nil
+            startupPollSince = nil
+            return
+        }
+        startupAnswer = ""
+        startupPollSince = Date()
+        let poll = python("tools.py", ["startup-state"], onLine: { [self] line in
+            if line.hasPrefix("{") { startupAnswer = line }  // (anything else is an error the log already has)
+        }, onExit: { [self] status in
+            startupPoll = nil
+            startupPollSince = nil
+            guard playing else { return }  // the game ended while we asked: there is nothing to report any more
+            if status == 0, let shown = startupDisplay(json: startupAnswer) {
+                if shown != startup { startup = shown }
+            } else {
+                if !startupAnswer.isEmpty { log("startup state unreadable (exit \(status)): \(startupAnswer)") }
+                startup = nil  // no verdict, so the window behaves exactly as it did before
+            }
+        })
+        startupPoll = poll
+        if poll == nil {
+            startupPollSince = nil
+            log("startup state couldn't run")
+            startup = nil
+        }
+    }
+
+    /// The game ended: stop asking, and say startup stopped (only if a verdict was being shown, so a probe that
+    /// never worked is never turned into a claim).
+    private func startupStopped() {
+        startupPoll?.stop()
+        startupPoll = nil
+        startupPollSince = nil
+        guard startup != nil else { return }
+        startup = startupDisplay(state: "stopped")
     }
 
     /// The game ended within seconds of Play: say so and let the player try again, instead of quietly closing.
@@ -587,6 +652,7 @@ final class Launcher: ObservableObject {
             if !signingIn, !checkingSteam, !steamSkipped { checkSteam() }
         }
         guard ticks % 2 == 0 else { return }
+        if playing { pollStartup() }  // (the command runs off the main thread; nothing is asked while nothing runs)
         processRunning(#"workshop_helper\.py (watch|get)"#) { [self] in helperRunning = $0 }
         guard playing else { return }
         // the game quit but Wine kept it running with no window (see WindowlessGame): it's over, so stop it
@@ -617,5 +683,6 @@ final class Launcher: ObservableObject {
     func shutdown() {
         log("quitting")
         qrProcess?.stop()
+        startupPoll?.stop()
     }
 }

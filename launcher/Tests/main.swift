@@ -245,6 +245,58 @@ check(expectation?.lowercased().contains("memory") == true, "the expectation say
 check(startupExpectation(tier: "standard") == nil, "a standard Mac is told nothing")
 check(startupExpectation(tier: nil) == nil, "fit.py couldn't answer: no warning, not a guess")
 check(startupExpectation(tier: "something-new") == nil, "an unrecognised tier: no warning")
+// what the window says about a starting game, from tools.py startup-state's one line (tested state by state)
+func startup(_ state: String, elapsed: Double? = nil, detail: String? = nil) -> StartupDisplay? {
+    let seconds = elapsed.map { String($0) } ?? "null"
+    var json = "{\"state\": \"\(state)\", \"elapsed_s\": \(seconds), \"stall_after_s\": 180"
+    if let detail { json += ", \"detail\": \"\(detail)\"" }
+    return startupDisplay(json: json + "}")
+}
+
+let sStarting = startup("starting", detail: "The game is starting.")
+check(sStarting?.look == .working && sStarting?.warning == false, "starting: working, not a warning")
+check(sStarting?.title == "Starting the game", "starting title: \(sStarting?.title ?? "-")")
+
+let sBuilding = startup("building", elapsed: 132)
+check(sBuilding?.look == .working, "building: still working")
+check(sBuilding?.title == "Building the Forge asset library", "building title: \(sBuilding?.title ?? "-")")
+check(sBuilding?.detail.contains("2 min 12 s") == true, "building says how long: \(sBuilding?.detail ?? "-")")
+check(sBuilding?.detail.contains("first start takes a while") == true, "building sets the expectation")
+
+// a long build is still a build: only the command calls a stall (it has the cache and the start time)
+check(startup("building", elapsed: 9000)?.warning == false, "building for a long time is not the window's call")
+
+let sReady = startup("ready", detail: "The game is up.")
+check(sReady?.look == .done && sReady?.warning == false, "ready: done, not a warning")
+check(sReady?.title == "Game ready" && sReady?.detail == "The game is up.", "ready: the game is up")
+
+let sStalled = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing")
+check(sStalled?.look == .warning && sStalled?.warning == true, "stalled: a warning")
+check(sStalled?.detail == "Startup stopped progressing: the Forge asset library has written nothing",
+      "stalled: the command's own words, not the window's guess")
+
+let sStopped = startup("stopped", detail: "The game isn't running.")
+check(sStopped?.look == .stopped && sStopped?.warning == false, "stopped: not a warning")
+check(sStopped?.title == "Game stopped" && sStopped?.detail == "The game isn't running.", "stopped: the game isn't running")
+
+// no detail from the command: the window still has a plain line to show
+check(startup("ready")?.detail == "The game is up.", "ready without a detail line")
+check(startup("building")?.detail == "Building. The first start takes a while.", "building without an elapsed time")
+check(startup("building", elapsed: 0)?.detail.contains("0 s") == true, "building at zero seconds")
+
+// unreadable or failing: no verdict at all, so the window keeps exactly the behaviour it had before
+check(startupDisplay(json: "") == nil, "no answer: no verdict")
+check(startupDisplay(json: "error: Permission denied") == nil, "a failure line: no verdict")
+check(startupDisplay(json: "not json at all") == nil, "garbage: no verdict")
+check(startupDisplay(json: "{\"state\": \"ready\"") == nil, "truncated json: no verdict")
+check(startupDisplay(json: #"{"state": "warming-up"}"#) == nil, "a state the window doesn't know: no verdict")
+
+// how long startup has been going, said plainly
+check(elapsedText(0) == "0 s" && elapsedText(45) == "45 s", "seconds")
+check(elapsedText(132) == "2 min 12 s" && elapsedText(600) == "10 min", "minutes")
+check(elapsedText(3720) == "1 h 2 min" && elapsedText(3600) == "1 h", "hours")
+check(elapsedText(-5) == "0 s", "never negative")
+
 
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

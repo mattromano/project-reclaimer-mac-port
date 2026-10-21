@@ -298,6 +298,19 @@ struct ContentView: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
+            // fit.py says this Mac is below the recommended memory: set the first start's expectation, without
+            // touching the Play button (the warning never gates playing).
+            if !m.playing, let note = m.memoryNotice {
+                Label {
+                    Text(note).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } icon: {
+                    Image(systemName: "memorychip").foregroundStyle(.orange)
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
+            }
+
             Button(action: installing ? { m.showInstallGames = true } : m.play) {
                 Label(playLabel, systemImage: m.playing ? "gamecontroller.fill" : installing ? "arrow.down.circle.fill" : "play.fill")
             }

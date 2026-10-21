@@ -305,6 +305,28 @@ func devTools(selected: Bool, pythonStatus: Int32?, pythonOutput: String) -> Dev
     return pythonOutput.contains("xcodebuild -license") || pythonOutput.contains("Xcode license") ? .license : .missing
 }
 
+// MARK: - machine fit
+
+/// fit.py's answer for this Mac, as far as the window needs it: the machine-fit tier. fit.py decides the tier (RAM is
+/// its business); the window only repeats the answer, so the two can never disagree. nil when fit.py couldn't be read
+/// or said nothing about the tier: no answer is not a verdict.
+func machineTier(fitJSON: String) -> String? {
+    guard let data = fitJSON.data(using: .utf8),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let tier = object["tier"] as? String else { return nil }
+    return tier
+}
+
+/// What the window says before Play about the first start, if anything. A constrained Mac (below the 16 GB the game
+/// recommends) is told the first asset-library build takes a long time, and why; a standard Mac is told nothing.
+/// nil for a tier fit.py didn't give, so a failed probe never invents a warning.
+func startupExpectation(tier: String?) -> String? {
+    guard tier == "constrained" else { return nil }
+    return "This Mac has less memory than the 16 GB the game recommends, so its first start can take a long time: "
+        + "before the menu appears, the game builds its Forge asset library. That can take half an hour or more, and "
+        + "it can look stuck while it works. Quitting other apps before Play gives it more room."
+}
+
 // MARK: - a game left running without a window
 
 /// A window owned by one of this install's Wine processes.

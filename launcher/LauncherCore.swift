@@ -369,6 +369,65 @@ func wineWindows(wineDir: URL) -> [WineWindow]? {
     return windows
 }
 
+// MARK: - what startup is doing
+
+/// `tools.py startup-state`'s answer. The command is the only thing that decides what startup is doing: this is
+/// just its JSON, so the window never infers progress from process liveness, log growth or CPU use.
+struct StartupState: Decodable, Equatable {
+    let state: String
+    let detail: String?
+    let elapsed_s: Double?
+}
+
+/// What the window says about a starting game: a title, a plain line of detail, and how to draw it.
+struct StartupDisplay: Equatable {
+    enum Look: Equatable { case working, done, warning, stopped }
+    var title: String
+    var detail: String
+    var look: Look
+    var warning: Bool { look == .warning }
+}
+
+/// The display for one line of `tools.py startup-state`. nil: the answer couldn't be read (or says a state this
+/// window doesn't know), so the window keeps exactly the behaviour it had before rather than inventing a verdict.
+func startupDisplay(json line: String) -> StartupDisplay? {
+    guard let data = line.data(using: .utf8),
+          let answer = try? JSONDecoder().decode(StartupState.self, from: data) else { return nil }
+    return startupDisplay(state: answer.state, detail: answer.detail ?? "", elapsed: answer.elapsed_s)
+}
+
+/// The state vocabulary (starting, building, ready, stalled, stopped) as the window shows it. Pure: no dates, no
+/// processes, so the display decision can be tested without launching a game. A long build is still a build: only
+/// the command calls a stall, since only it knows the cache and when this run started.
+func startupDisplay(state: String, detail: String = "", elapsed: TimeInterval? = nil) -> StartupDisplay? {
+    func words(_ fallback: String) -> String { detail.isEmpty ? fallback : detail }
+    switch state {
+    case "starting":
+        return StartupDisplay(title: "Starting the game", detail: words("The game is starting."), look: .working)
+    case "building":
+        let since = elapsed.map { " for \(elapsedText($0))" } ?? ""
+        return StartupDisplay(title: "Building the Forge asset library",
+                              detail: "Building\(since). The first start takes a while.", look: .working)
+    case "ready":
+        return StartupDisplay(title: "Game ready", detail: words("The game is up."), look: .done)
+    case "stalled":
+        return StartupDisplay(title: "Startup has stalled", detail: words("Startup stopped progressing."),
+                              look: .warning)
+    case "stopped":
+        return StartupDisplay(title: "Game stopped", detail: words("The game isn't running."), look: .stopped)
+    default:
+        return nil
+    }
+}
+
+/// "45 s", "2 min 12 s", "10 min", "1 h 2 min" for how long something has been going.
+func elapsedText(_ seconds: TimeInterval) -> String {
+    let s = max(0, Int(seconds.rounded(.down)))
+    if s < 60 { return "\(s) s" }
+    if s < 3600 { return s % 60 == 0 ? "\(s / 60) min" : "\(s / 60) min \(s % 60) s" }
+    return s % 3600 == 0 ? "\(s / 3600) h" : "\(s / 3600) h \(s % 3600 / 60) min"
+}
+
 // MARK: - controller axes
 
 /// A control's value as 0...1 of the range it reports (logical min/max): 8BitDo sticks are 8-bit, an Xbox

@@ -40,6 +40,35 @@ struct StepRow: View {
     }
 }
 
+/// What startup is doing while a game starts: a title, a plain line, and how to draw it (spinner, tick, or a warning).
+struct StartupRow: View {
+    let display: StartupDisplay
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            glyph.frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(display.title).font(.headline)
+                Text(display.detail).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(display.warning ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.08)))
+    }
+
+    @ViewBuilder private var glyph: some View {
+        switch display.look {
+        case .working: ProgressView().controlSize(.small).frame(width: 22, height: 22)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(accent).font(.title3)
+        case .warning: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.title3)
+        case .stopped: Image(systemName: "stop.circle.fill").foregroundStyle(.secondary).font(.title3)
+        }
+    }
+}
+
 struct QRView: View {
     let grid: QRGrid
     var body: some View {
@@ -253,6 +282,8 @@ struct ContentView: View {
             }
 
             if let j = m.joinTrouble { JoinTroubleCard(m: m, j: j) }
+
+            if let s = m.startup { StartupRow(display: s) }
 
             if m.playing {
                 Label {

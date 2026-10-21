@@ -276,13 +276,28 @@ class UpdaterTest(unittest.TestCase):
     def test_skipped_while_running_is_not_reported_as_up_to_date(self):
         (self.home / "game" / "project-reclaimer-v0.9.8.exe").write_bytes(b"old")
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 r"C:\game\project-reclaimer-v9.9.99.exe game-client --mcc-path x"])
+                                 r"C:\game\project-reclaimer-v9.9.99.exe game-client --mcc-path x"],
+                                cwd=self.home / "game")  # (the launcher starts the game from here)
         try:
             rc, out = self.run_updater("run")
         finally:
             game.kill()
         self.assertEqual(out[-1], "done: skipped while the game is running")
         self.assertEqual(self.game_files(), ["project-reclaimer-v0.9.8.exe"])
+
+    def test_a_game_from_another_installation_doesnt_stop_the_update(self):
+        (self.home / "game" / "project-reclaimer-v0.9.8.exe").write_bytes(b"old")
+        other = self.tmp / "other" / "game"
+        other.mkdir(parents=True)
+        game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=other)  # (another checkout)
+        try:
+            rc, out = self.run_updater("game")
+        finally:
+            game.kill()
+            game.wait()  # (reap it: otherwise Python warns about a still-running child)
+        self.assertEqual(out[-1], "done: updated", out)
+        self.assertEqual(self.game_files(), ["project-reclaimer-v0.9.12.exe"])
 
     # ---- choosing an older version (servers that haven't updated yet) ------------------------------------------
     def test_versions_lists_recent_releases_without_prereleases(self):

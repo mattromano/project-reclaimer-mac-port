@@ -4,7 +4,7 @@ Pointers for contributors and coding agents. The README is for players; this fil
 
 ## Layout
 - `install.sh`: installs and updates everything (also re-run by the app on every Mac port update).
-- `scripts/`: what lands in `~/Games/ProjectReclaimer/game/`: `run.sh` (starts the game under Wine), `updater.py`, `tools.py` (Tools menu and auto-fixes), `workshop_helper.py` (Steam sign-in, game and mod downloads), `presets.py` + `fit.py` (graphics settings per Mac).
+- `scripts/`: what lands in `~/Games/ProjectReclaimer/game/`: `run.sh` (starts the game under Wine), `updater.py`, `tools.py` (Tools menu and auto-fixes), `workshop_helper.py` (Steam sign-in, game and mod downloads), `game_process.py` (which running processes count as this install's game), `presets.py` + `fit.py` (graphics settings per Mac).
 - `launcher/*.swift`: the app window (SwiftUI). Pure, tested logic lives in `LauncherCore.swift`; tests in `launcher/Tests/main.swift`.
 - `docs/specs/` (plans), `docs/adr/` (decisions, including things that don't work).
 

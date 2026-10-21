@@ -28,7 +28,7 @@ class ToolsTest(unittest.TestCase):
         for d in ("game", "logs", "tools", WORKSHOP / "content" / "976730"):
             (self.home / d).mkdir(parents=True)
         # the helper scripts sit next to tools.py in an install's game folder
-        for f in ("workshop_helper.py", "presets.py", "fit.py", "reclaimer-loopback.sh",
+        for f in ("workshop_helper.py", "presets.py", "fit.py", "game_process.py", "reclaimer-loopback.sh",
                   "local.projectreclaimer.loopback.plist"):
             shutil.copy(REPO / "scripts" / f, self.home / "game" / f)
         shutil.copy(TOOLS, self.home / "game" / "tools.py")
@@ -260,9 +260,11 @@ class ToolsTest(unittest.TestCase):
 
     # ---- startup state (the watchdog) --------------------------------------------------------------------------
 
-    def start_fake_game(self):
+    def start_fake_game(self, folder=None):
+        # the launcher starts the game from the install's game folder (run.sh cds there), which is what identifies it
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 "project-reclaimer-v9.9.99.exe game-client"])
+                                 "project-reclaimer-v9.9.99.exe game-client"],
+                                cwd=folder or (self.home / "game"))
 
         def stop():  # (kill and reap, so no ResourceWarning about a still-running child)
             game.kill()
@@ -289,6 +291,23 @@ class ToolsTest(unittest.TestCase):
     def test_startup_state_is_stopped_when_the_game_is_not_running(self):
         self.write_log("Forge library: building it while the game starts.\n")
         self.assertEqual(self.startup()["state"], "stopped")
+
+    def test_only_a_game_started_from_this_installation_counts_as_running(self):
+        # two checkouts (or two test runs) can have a game at once: only this install's counts
+        other = self.tmp / "Other" / "ProjectReclaimer"
+        (other / "game").mkdir(parents=True)
+        self.write_log("Menu loading screen finished.\n")
+        self.start_fake_game(other / "game")  # (another installation's game, started from its own folder)
+        self.assertEqual(self.startup()["state"], "stopped")
+        self.start_fake_game()  # (this installation's)
+        self.assertEqual(self.startup()["state"], "ready")
+
+    def test_an_older_release_started_from_its_own_folder_counts_as_running(self):
+        versions = self.home / "game" / "versions"  # (run.sh cds here to play a release the player chose)
+        versions.mkdir()
+        self.start_fake_game(versions)
+        self.write_log("Menu loading screen finished.\n")
+        self.assertEqual(self.startup()["state"], "ready")
 
     def test_startup_state_is_ready_once_the_loading_screen_finishes(self):
         self.start_fake_game()
@@ -343,7 +362,7 @@ class ToolsTest(unittest.TestCase):
     def test_remove_mod_refuses_while_the_game_runs_and_rejects_odd_ids(self):
         self.add_mod("111", "Warlock", 10)
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 "project-reclaimer-v9.9.99.exe game-client"])
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home / "game")
         try:
             self.assertEqual(self.run_tool("remove-mod", "111")[1][-1], "error: Quit the game first.")
         finally:
@@ -398,7 +417,7 @@ class ToolsTest(unittest.TestCase):
 
     def test_repair_and_graphics_wait_for_the_game_to_quit(self):
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 "project-reclaimer-v9.9.99.exe game-client"])
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home / "game")
         try:
             tools = self.load()  # (in-process, so the free-space check can be stubbed as in the add-games tests)
             with mock.patch.object(tools.helper(), "game_download", return_value="ok"), \
@@ -579,7 +598,7 @@ class ToolsTest(unittest.TestCase):
     # ---- force quit / uninstall --------------------------------------------------------------------------------
     def test_force_quit_stops_the_game(self):
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
-                                 "project-reclaimer-v9.9.99.exe game-client"])
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home / "game")
         try:
             rc, out = self.run_tool("force-quit")
             self.assertEqual(out[-1], "ok")
@@ -589,6 +608,20 @@ class ToolsTest(unittest.TestCase):
                 game.kill()
         self.assertIsNotNone(game.poll())
 
+    def test_force_quit_leaves_another_installs_game_alone(self):
+        other = self.tmp / "Other" / "ProjectReclaimer"
+        (other / "game").mkdir(parents=True)
+        elsewhere = self.start_fake_game(other / "game")
+        game = self.start_fake_game()
+        try:
+            self.assertEqual(self.run_tool("force-quit")[1][-1], "ok")
+            game.wait(timeout=10)
+            self.assertIsNone(elsewhere.poll(), "force quit stopped another installation's game")
+        finally:
+            if game.poll() is None:
+                game.kill()
+            elsewhere.kill()
+
     def test_force_quit_works_when_wineserver_hangs(self):
         # a frozen game often means a stuck wineserver: Force Quit must still stop the game, and not hang
         ws = self.home / "wine/Wine Staging.app/Contents/Resources/wine/bin/wineserver"
@@ -596,7 +629,7 @@ class ToolsTest(unittest.TestCase):
         ws.write_text("#!/bin/sh\nsleep 120\n")
         ws.chmod(0o755)
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
-                                 "project-reclaimer-v9.9.99.exe game-client"])
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home / "game")
         try:
             rc, out = self.run_tool("force-quit")
             self.assertEqual(out[-1], "ok", out)

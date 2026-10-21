@@ -474,15 +474,24 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(settings["mouse_sensitivity"], 3.0)  # only graphics change
 
     def test_repair_and_graphics_wait_for_the_game_to_quit(self):
+        # (spawned from the install's game folder so the fake counts as this installation's game either way)
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 "project-reclaimer-v9.9.99.exe game-client"])
+                                 "project-reclaimer-v9.9.99.exe game-client"],
+                                cwd=str(self.home / "game"))
         try:
-            self.assertEqual(self.run_tool("repair")[1][-1], "error: Quit the game first.")
-            for args in (["add-game", "odst"], ["remove-game", "odst"], ["repair-game", "halo3"]):
-                self.assertEqual(self.run_tool(*args)[1][-1], "error: Quit the game first.", args)
-            self.assertEqual(self.run_tool("reset-graphics")[1][-1], "error: Quit the game first.")
+            # in-process so free space can be stubbed: this machine has less than add-game needs, and the
+            # running-game refusal has to be what the commands hit first
+            tools = self.load()
+            with mock.patch.object(tools.shutil, "disk_usage", return_value=mock.Mock(free=200 * 10**9)), \
+                    mock.patch.object(tools.helper(), "game_download", return_value="ok"):
+                self.assertEqual(tools.repair(), "error: Quit the game first.")
+                self.assertEqual(tools.add_games(["odst"]), "error: Quit the game first.")
+                self.assertEqual(tools.remove_game("odst"), "error: Quit the game first.")
+                self.assertEqual(tools.repair_game("halo3"), "error: Quit the game first.")
+            self.assertEqual(tools.reset_graphics(), "error: Quit the game first.")
         finally:
             game.kill()
+            game.wait()
 
     def fake_mcc(self, odst=True, halo3=True):
         mcc = self.home / "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection"

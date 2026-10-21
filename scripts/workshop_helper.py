@@ -22,6 +22,7 @@ Usage: workshop_helper.py watch | get [--in-game] <workshop id or title>... | lo
        game-download <folder> [--odst]
 """
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -62,7 +63,6 @@ WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" /
 # Reclaimer's profile lives in the prefix (the installer unlinks Documents from ~/Documents)
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
             for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
-GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
 GAME_GRACE = 60  # seconds the game must be gone before the watching helper stops
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")
@@ -83,6 +83,12 @@ OFFLINE = re.compile(r"Could not connect to Steam|Connection to Steam failed|Ser
 QR_START = "Use the Steam Mobile App to sign in with this QR code:"
 QR_SUCCESS = re.compile(r"login with -username (\S+) -remember-password")
 UA = {"User-Agent": "Mozilla/5.0"}
+
+# game_process.py from this install: the one rule for which running processes are this installation's game.
+# (game_process.py owns that rule and says why it is loaded by exact path.)
+_spec = importlib.util.spec_from_file_location("game_process", Path(__file__).resolve().parent / "game_process.py")
+game_process = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(game_process)
 
 
 def log(msg):
@@ -543,9 +549,10 @@ def record_join_problem(address, server_version, mine, kind):
 
 
 def game_running():
-    # -a: launch.sh starts this helper and then becomes the game, so the game is our parent process, and pgrep
-    # leaves out the caller's ancestors unless asked to include them
-    return subprocess.run(["pgrep", "-a", "-f", GAME_PROCESS], capture_output=True).returncode == 0
+    """Whether this installation's game is running (the same rule tools.py and updater.py use)."""
+    # The helper is started by launch.sh, which then becomes the game, so the game is our parent process:
+    # game_process passes pgrep -a, which includes the caller's ancestors, and matches this install's folder.
+    return game_process.running(BASE)
 
 
 def watch():

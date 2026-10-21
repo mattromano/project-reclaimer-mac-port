@@ -503,6 +503,11 @@ class ToolsTest(unittest.TestCase):
             download.assert_called_with(str(tools.MCC_DIR), ["976731", "976738", "976739", "1064222"])
         self.assertFalse((self.home / "halo3-removed").exists())
 
+    def test_add_game_command_dispatches_to_the_downloader(self):
+        # the launcher runs `tools.py add-game <id>...` (Tools.swift); this is its argv dispatch, not add_games itself
+        rc, out = self.run_tool("add-game", "halo3", "halo4")
+        self.assertEqual((rc, out[-1]), (1, "error: That isn't a game Project Reclaimer plays."))
+
     def test_add_games_needs_room_for_them(self):
         # a full disk used to end as a DepotDownloader error part-way through ~9 GB
         self.fake_mcc(odst=False)
@@ -621,6 +626,23 @@ class ToolsTest(unittest.TestCase):
             if game.poll() is None:
                 game.kill()
             elsewhere.kill()
+
+    def test_force_quit_ignores_a_number_in_another_process_command_line(self):
+        # pgrep can print "<pid> <command line>" (procps does; BSD pgrep prints only pids). Read as one word list,
+        # every argument of a matching command line went to lsof as if it were a pid, so a number there could name a
+        # live process of this install and force quit then killed it.
+        inside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.home / "game")
+        decoy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                  "project-reclaimer-v9.9.99.exe game-client", str(inside.pid)], cwd=self.tmp)
+        try:
+            self.assertEqual(self.run_tool("force-quit")[1][-1], "ok")
+            self.assertIsNone(inside.poll(), "force quit killed a process named only in another command line")
+            self.assertIsNone(decoy.poll(), "force quit killed another installation's game")
+        finally:
+            for p in (inside, decoy):
+                if p.poll() is None:
+                    p.kill()
+                p.wait()
 
     def test_force_quit_works_when_wineserver_hangs(self):
         # a frozen game often means a stuck wineserver: Force Quit must still stop the game, and not hang

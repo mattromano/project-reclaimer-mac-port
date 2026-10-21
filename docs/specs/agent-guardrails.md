@@ -52,26 +52,39 @@ material and are referenced, not restated, from anywhere else.
 pointers, not explanations, so it stays cheap in every agent's context.
 
 **Process matching is scoped to the installation.** A process counts as this installation's game only if it belongs
-to this installation — its working directory lies inside the install, or it carries a marker this install sets.
-The Tools check and the updater share the same rule so they cannot disagree.
+to this installation — and the installation's identity is its working directory: the process's working directory
+lies inside the install. That is the decision, not a mechanism to hide behind the tests. The launcher starts the
+game from the install's own folder, so the folder is what actually distinguishes one copy from another; a marker
+would have to be carried by the game itself. A process started from another checkout, another test run or another
+player's folder is not this installation's game.
+
+**One module owns the rule and the pattern.** `game_process.py` holds the match pattern, with its
+`RECLAIMER_GAME_PROCESS` override, and exposes `running(root)` / `pids(root)` so callers pass only the install.
+The Tools check, Force Quit and the updater call it, and so does `workshop_helper.py`, whose "has the game exited?"
+check would otherwise drift from theirs.
 
 **The rule stays permissive enough for the real game**, which is started from its own folder, and for the older
 release a player may have chosen.
+
+**Force Quit kills only this installation's game**, one pid at a time. A system-wide `pkill` for the game would
+violate the same rule the check enforces, so the scoped kill is deliberate.
 
 **No new test seam.** The existing fake-process tests exercise the match directly.
 
 ## Testing Decisions
 
 A good test asserts observable behaviour: given a fake game process belonging to this installation, the check
-reports running; given one belonging to another installation, it reports not running. Tests must not assert on how
-the match is implemented.
+reports running; given one belonging to another installation, it reports not running. Because the working directory
+is the installation's identity (above), a test may set a fake game up by starting it in a folder: that asserts the
+decision rather than an accidental implementation detail.
 
-**Modules under test:** the Tools game check and the updater's game check.
+**Modules under test:** the Tools game check, the updater's game check, and the shared rule in `game_process.py`.
 
 **Prior art:** the existing tests that spawn a process whose command line names the game executable.
 
-**The concurrency case is the regression test.** Two suites running at once, one holding a fake game process, must
-both pass. That is the failure this change exists to prevent, so it is proven directly rather than inferred.
+**The concurrency case is the regression test.** A fake game belonging to a different installation, alive while the
+assertions run, must not make this suite report a running game. Running two suites at once by hand is
+corroboration, not the test.
 
 **CI is verified by its first run**, and by a deliberately failing change observed once before it is relied upon;
 it is not unit-tested.
@@ -95,6 +108,11 @@ interpreter differs, the run should fail loudly rather than silently skip work.
 
 **Navigation file discipline.** It is the only always-loaded material in the repository. Its pointers should
 front-load the triggering word and name only distinct branches; depth belongs in the documents they point at.
+
+**The launcher's own hints still search system-wide.** `launcher/LauncherApp.swift`'s `processRunning(_:)` keeps a
+bare `pgrep -a -f`: it only feeds the window's own state hints, and scoping it in Swift would duplicate — and could
+drift from — the Python rule. Every decision that acts (the Tools check, Force Quit, the updater) goes through
+`game_process.py`.
 
 **Publishing.** This spec lives in the repository because the upstream tracker does not grant this contributor label
 rights. Mirror it to an issue with the agent-ready label once the tracker is configured.

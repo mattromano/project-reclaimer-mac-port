@@ -380,6 +380,27 @@ class HelperTest(unittest.TestCase):
             h.watch()
         self.assertEqual(self.status(h)["state"], "ready")
 
+    def test_another_installs_game_is_not_this_helpers_game(self):
+        # the helper matches through game_process.py too: its rule is the install's own folder, so a game another
+        # checkout (or another test run) started is not this helper's game
+        h = self.load()
+        fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home.parent)
+
+        def stop(p):
+            p.kill()
+            p.wait()
+        self.addCleanup(stop, fake)
+        time.sleep(0.2)
+        self.assertFalse(h.game_running(), "a game from another folder counted as this install's")
+        fake.kill()
+        fake.wait()
+        mine = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home)
+        self.addCleanup(stop, mine)
+        time.sleep(0.2)
+        self.assertTrue(h.game_running(), "this installation's game did not count")
+
     def test_game_counts_as_running_when_it_is_the_helpers_parent(self):
         # launch.sh starts the helper, then exec's into the game: the game is the helper's parent process, and
         # macOS pgrep skips a caller's ancestors unless told otherwise, so the helper stopped mid-game after 60 s

@@ -45,8 +45,6 @@ MENU_DLLS = ("opengl32.dll", "libgallium_wgl.dll")  # Mesa, loaded from the exe'
 CLIENT_EXE = re.compile(r"^project-reclaimer-v[0-9.]+\.exe$")  # the game as installed here
 # the game as a release names it: project-reclaimer-v0.9.17.exe, project-reclaimer-client-v0.9.18.exe from 0.9.18 on
 RELEASE_CLIENT = re.compile(r"^project-reclaimer-(?:client-)?v([0-9.]+)\.exe$")
-# the running game itself (as workshop_helper.py matches it), not any command that merely names the file
-GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
 UA = {"User-Agent": "project-reclaimer-mac-port"}
 
 
@@ -84,16 +82,15 @@ def sha256(path):
     return h.hexdigest()
 
 
-# game_process.py from this install: the one rule for which running processes are this installation's game, shared
-# with tools.py so the two cannot disagree. Loaded by exact path, because `/usr/bin/python3 -I` leaves the script's
-# own folder off sys.path (and adding it would let a file beside it stand in for a stdlib module; see presets.py).
+# game_process.py from this install: the one rule for which running processes are this installation's game.
+# (game_process.py owns that rule and says why it is loaded by exact path.)
 _spec = importlib.util.spec_from_file_location("game_process", Path(__file__).resolve().parent / "game_process.py")
 game_process = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(game_process)
 
 
 def game_running():
-    return game_process.running(GAME_PROCESS, BASE)
+    return game_process.running(BASE)
 
 
 # ---------------------------------------------------------------------------------------------------------------

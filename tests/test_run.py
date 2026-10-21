@@ -18,7 +18,8 @@ class RunTest(unittest.TestCase):
         self.home = Path(tempfile.mkdtemp())
         game = self.home / "game"
         game.mkdir()
-        shutil.copy(REPO / "scripts" / "run.sh", game / "run.sh")
+        for f in ("run.sh", "sandboxed.sh", "wine-sandbox.sb"):
+            shutil.copy(REPO / "scripts" / f, game / f)
         for exe in ("project-reclaimer-v0.9.9.exe", "project-reclaimer-v0.9.13.exe",
                     "project-reclaimer-dedicated-v0.9.13.exe"):
             (game / exe).write_bytes(b"MZ")
@@ -37,6 +38,11 @@ class RunTest(unittest.TestCase):
         p = subprocess.run(["/bin/zsh", str(self.home / "game" / "run.sh")], capture_output=True, text=True,
                            env=env, timeout=30)
         return p.stdout.strip()
+
+    def test_game_runs_in_the_sandbox(self):
+        wine = self.home / "wine" / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"
+        wine.write_text(f'#!/bin/sh\n/bin/ls "{Path.home()}" >/dev/null 2>&1 && echo free || echo boxed\n')
+        self.assertEqual(self.run_game(), "boxed")
 
     def test_newest_by_default(self):
         out = self.run_game()

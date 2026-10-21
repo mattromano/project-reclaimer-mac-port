@@ -4,6 +4,7 @@ Runs install.sh against a throwaway RECLAIMER_HOME with fake commands first on P
 installed or downloaded). Run: /usr/bin/python3 -I -m unittest discover -s tests
 """
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -35,6 +36,17 @@ class InstallGuiTest(unittest.TestCase):
         p = subprocess.run(["/bin/bash", str(REPO / "install.sh")], env=env, stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=120)
         return p.returncode, [l for l in p.stdout.splitlines() if l.startswith("error: ")]
+
+    def test_every_wine_start_is_sandboxed(self):
+        # (an unsandboxed wineboot would run DLLs the sandboxed game could have changed)
+        text = (REPO / "install.sh").read_text()
+        starts = [l for l in text.splitlines() if re.search(r'"\$WINE_BIN/wine(server)?"', l)]
+        self.assertGreaterEqual(len(starts), 4)
+        for line in starts:
+            self.assertIn('"$BASE/game/sandboxed.sh" "$WINE_BIN/', line)
+        copied = re.search(r"for f in (.*?); do script_file", text, re.S).group(1)
+        self.assertIn("sandboxed.sh", copied)
+        self.assertIn("wine-sandbox.sb", copied)
 
     def test_top_level_failure_reaches_the_window(self):
         self.fake("uname", "echo x86_64")

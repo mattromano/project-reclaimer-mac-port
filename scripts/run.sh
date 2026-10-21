@@ -51,4 +51,5 @@ else
   EXE=$(ls project-reclaimer-v*.exe 2>/dev/null | grep -v dedicated | sort -V | tail -1)
 fi
 [ -n "$EXE" ] || { echo "Project Reclaimer is not installed in $BASE/game" >&2; exit 1; }
-exec "$WINE" "$EXE" "${@:-game-client}" --mcc-path "$MCC"
+# (in the macOS sandbox: the game can't reach the person's own files; see sandboxed.sh)
+exec "$BASE/game/sandboxed.sh" "$WINE" "$EXE" "${@:-game-client}" --mcc-path "$MCC"

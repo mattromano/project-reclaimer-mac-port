@@ -162,9 +162,10 @@ note "ok"
 
 bold "Game scripts and Workshop mod helper"
 # (the network files are kept here too, so the window's network fix can reinstall the startup task)
-for f in run.sh launch.sh gamecontrollerdb.txt workshop_helper.py presets.py fit.py game_process.py updater.py tools.py reclaimer-loopback.sh \
+for f in run.sh launch.sh sandboxed.sh wine-sandbox.sb gamecontrollerdb.txt workshop_helper.py presets.py fit.py \
+         game_process.py updater.py tools.py reclaimer-loopback.sh \
          local.projectreclaimer.loopback.plist; do script_file "scripts/$f" "$BASE/game/$f"; done
-chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py" \
+chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/sandboxed.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py" \
   "$BASE/game/tools.py"
 note "ok"
 
@@ -186,17 +187,18 @@ ls "$BASE"/game/project-reclaimer-v*.exe >/dev/null 2>&1 ||
 
 bold "Windows environment for the Wine version"
 WINE_BIN="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin"
+export RECLAIMER_HOME="$BASE"  # (the install sandboxed.sh keeps Wine to)
 if [ ! -f "$BASE/prefix-wine/system.reg" ]; then
   # (mscoree/mshtml off: no Wine Mono/Gecko install dialogs; the game doesn't use them)
-  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" "$WINE_BIN/wine" wineboot -i >/dev/null 2>&1 || true
-  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" "$BASE/game/sandboxed.sh" "$WINE_BIN/wine" wineboot -i >/dev/null 2>&1 || true
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$BASE/game/sandboxed.sh" "$WINE_BIN/wineserver" -w
 fi
 # controllers come to the game from SDL. For PlayStation pads Wine otherwise drops SDL's gamepad for a raw PS device
 # ("hidraw"), which the game can't use: "no gamepad detected" (#17). Xbox and other pads come from SDL either way.
 if ! grep -q '"DisableHidraw"=dword:00000001' "$BASE/prefix-wine/system.reg" 2>/dev/null; then
-  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wine" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$BASE/game/sandboxed.sh" "$WINE_BIN/wine" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
     /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
-  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$BASE/game/sandboxed.sh" "$WINE_BIN/wineserver" -w
 fi
 unlink_documents "$BASE/prefix-wine"
 # DXVK-macOS goes into this prefix's system32 so the shared game folder stays free of graphics DLLs. Its d3d11.dll is

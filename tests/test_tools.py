@@ -29,7 +29,7 @@ class ToolsTest(unittest.TestCase):
             (self.home / d).mkdir(parents=True)
         # the helper scripts sit next to tools.py in an install's game folder
         for f in ("workshop_helper.py", "presets.py", "fit.py", "game_process.py", "reclaimer-loopback.sh",
-                  "local.projectreclaimer.loopback.plist"):
+                  "local.projectreclaimer.loopback.plist", "sandboxed.sh", "wine-sandbox.sb"):
             shutil.copy(REPO / "scripts" / f, self.home / "game" / f)
         shutil.copy(TOOLS, self.home / "game" / "tools.py")
         self.apps = self.tmp / "Applications"
@@ -665,6 +665,14 @@ class ToolsTest(unittest.TestCase):
     def test_server_version_of_a_server_that_doesnt_answer(self):
         self.fake_wine('echo "Error: Connecting to game server (UDP/QUIC): no response within 2500 ms"; exit 1')
         self.assertEqual(self.run_tool("server-version", "1.2.3.4:5")[1][-1], "unreachable")
+
+    def test_server_checks_and_joins_run_in_the_sandbox(self):
+        boxed = f'/bin/ls "{Path.home()}" >/dev/null 2>&1 && s=free || s=boxed'
+        self.fake_wine(boxed + '; echo "{\\"name\\": \\"$s\\", \\"version\\": \\"0.9.11\\"}"')
+        self.assertEqual(self.run_tool("server-version", "1.2.3.4:5")[1][-1], "0.9.11 boxed")
+        self.fake_wine(boxed + f'; echo "$s" > {self.tmp / "joined"}')
+        self.run_tool("join", "1.2.3.4:5")
+        self.assertEqual(self.joined_with(), "boxed")
 
     def test_server_version_rejects_odd_addresses(self):
         self.assertTrue(self.run_tool("server-version", "1.2.3.4; rm -rf /")[1][-1].startswith("error: "))

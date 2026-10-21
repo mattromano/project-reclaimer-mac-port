@@ -1,0 +1,28 @@
+(version 1)
+; What Wine can reach: the game, and anything a bad release or a server exploiting a game bug runs inside it.
+; sandboxed.sh applies it to every Wine start, and every process Wine starts inherits it. Parameters: BASE (the
+; install), TMP and CACHE (this user's temporary and cache folders), all real paths.
+(allow default)
+
+; the person's files: home folders and other drives (names stay visible to path lookups, contents don't)
+(deny file-read* (subpath "/Users") (subpath "/Volumes"))
+(allow file-read-metadata)
+(allow file-read*
+  (subpath (string-append (param "BASE") "/wine"))
+  (subpath (string-append (param "BASE") "/game"))
+  (subpath (string-append (param "BASE") "/prefix-wine"))
+  (literal (string-append (param "BASE") "/controller-mappings-active.txt")))
+
+; writes: the Windows folder, temporary files and devices only. Never game/ or wine/: their scripts and programs
+; later run outside the sandbox
+(deny file-write*)
+(allow file-write*
+  (subpath (string-append (param "BASE") "/prefix-wine"))
+  (subpath "/private/tmp")
+  (subpath (param "TMP"))
+  (subpath (param "CACHE"))
+  (subpath "/dev"))
+
+; ways to hand work to something outside the sandbox
+(deny appleevent-send)
+(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/usr/bin/osacompile"))

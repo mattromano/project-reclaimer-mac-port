@@ -401,11 +401,11 @@ def force_quit():
             os.kill(int(pid), signal.SIGKILL)
         except (ProcessLookupError, ValueError):  # (it exited between the match and the kill)
             pass
-    env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"))
+    env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), RECLAIMER_HOME=str(BASE))
     wineserver = BASE / "wine" / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "bin" / "wineserver"
-    if wineserver.exists():
+    if wineserver.exists() and SANDBOXED.exists():
         try:
-            subprocess.run([str(wineserver), "-k"], env=env, capture_output=True, timeout=10)
+            subprocess.run([str(SANDBOXED), str(wineserver), "-k"], env=env, capture_output=True, timeout=10)
         except subprocess.TimeoutExpired:
             pass
     subprocess.run(["pkill", "-9", "-f", str(BASE / "wine") + "/"], capture_output=True)
@@ -633,7 +633,8 @@ def controller_mappings_file():
 
 def game_env():
     """Wine settings as run.sh uses them, for asking the game something without opening it."""
-    env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), WINEDEBUG="-all", MVK_CONFIG_LOG_LEVEL="0",
+    env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), RECLAIMER_HOME=str(BASE), WINEDEBUG="-all",
+               MVK_CONFIG_LOG_LEVEL="0",
                WINEDLLOVERRIDES="opengl32=n,b;xaudio2_9=d;d3d11,d3d10core=n,b")
     # ~/.zshenv may inject an arm64 DYLD shim (libnomallocstacklogging) globally; Wine runs as an x86_64/Rosetta binary.
     env.pop("DYLD_INSERT_LIBRARIES", None)
@@ -644,6 +645,7 @@ def game_env():
 
 
 WINE = BASE / "wine" / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"
+SANDBOXED = GAME / "sandboxed.sh"  # every Wine start goes through it: Wine can't reach the person's own files
 
 
 def game_exe():
@@ -668,7 +670,7 @@ def server_version(address):
     if not exe:
         return "error: Project Reclaimer isn't installed."
     try:
-        p = subprocess.run([str(WINE), exe, "server-status", address], cwd=folder, env=game_env(),
+        p = subprocess.run([str(SANDBOXED), str(WINE), exe, "server-status", address], cwd=folder, env=game_env(),
                            capture_output=True, text=True, timeout=40)
     except subprocess.TimeoutExpired:
         return "unreachable"
@@ -693,7 +695,8 @@ def join(address):
     if not exe:
         return "error: Project Reclaimer isn't installed."
     # a second start with only the link hands it to the running game and exits (other arguments make it ignore it)
-    subprocess.Popen([str(WINE), exe, f"reclaimer://join?server={address}"], cwd=folder, env=game_env(),
+    subprocess.Popen([str(SANDBOXED), str(WINE), exe, f"reclaimer://join?server={address}"], cwd=folder,
+                     env=game_env(),
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
     return "ok"

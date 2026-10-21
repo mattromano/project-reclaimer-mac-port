@@ -231,5 +231,20 @@ check(readsThroughGameController(vendor: 0x054C) && !readsThroughGameController(
 check(knownLayout(vendor: 0x054C)?["back"] == "b\(GCButton.back.rawValue)"
       && knownLayout(vendor: 0x054C)?["y"] == "b\(GCButton.y.rawValue)", "PlayStation layout follows GCButton")
 
+// the machine-fit tier sets an expectation before Play; fit.py decides it (the window never measures RAM itself)
+let constrainedFit = #"{"arch": "arm64", "cores": 8, "free_disk_gb": 120, "macos": "14.0", "ram_gb": 8, "screen": [2560, 1440], "tier": "constrained"}"#
+let standardFit = #"{"arch": "arm64", "cores": 10, "free_disk_gb": 200, "macos": "14.0", "ram_gb": 32, "screen": [2560, 1440], "tier": "standard"}"#
+check(machineTier(fitJSON: constrainedFit) == "constrained", "fit.py says 8 GB is constrained")
+check(machineTier(fitJSON: standardFit) == "standard", "fit.py says 32 GB is standard")
+check(machineTier(fitJSON: "") == nil, "no answer from fit.py: no tier")
+check(machineTier(fitJSON: "Traceback (most recent call last):") == nil, "a failing fit.py: no tier")
+check(machineTier(fitJSON: #"{"ram_gb": 8}"#) == nil, "fit.py without a tier: no tier")
+let expectation = startupExpectation(tier: "constrained")
+check(expectation != nil, "a constrained Mac is told before Play that the first start takes a long time")
+check(expectation?.lowercased().contains("memory") == true, "the expectation says why: \(expectation ?? "-")")
+check(startupExpectation(tier: "standard") == nil, "a standard Mac is told nothing")
+check(startupExpectation(tier: nil) == nil, "fit.py couldn't answer: no warning, not a guess")
+check(startupExpectation(tier: "something-new") == nil, "an unrecognised tier: no warning")
+
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

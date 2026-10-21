@@ -36,6 +36,9 @@ final class Launcher: ObservableObject {
     @Published var controllers: Step? { didSet { if controllers != oldValue, let c = controllers { log("controllers: \(c)") } } }
     /// Where the Mac's sound goes: the game keeps that output once it starts, so it is shown (and warned about) before Play.
     @Published var sound: Step? { didSet { if sound != oldValue, let s = sound { log("sound: \(s)") } } }
+    /// fit.py's tier says this Mac is below the recommended memory: what the first start will do, said before Play.
+    /// nil on a standard Mac, and when fit.py couldn't answer at all.
+    @Published var memoryNotice: String? { didSet { if memoryNotice != oldValue, let n = memoryNotice { log("memory notice: \(n)") } } }
     @Published var notice: String?   // a plain-language note, e.g. after Tools stopped the game
     @Published var showTools = false
     @Published var needsLicense = false  // Xcode's license isn't accepted: no helper script can run until it is
@@ -138,6 +141,7 @@ final class Launcher: ObservableObject {
                     guard state == .license else {
                         runUpdate()  // (then the network check and Steam: never alongside an update's own network step)
                         checkSound()
+                        checkMachine()
                         return
                     }
                     needsLicense = true
@@ -159,7 +163,17 @@ final class Launcher: ObservableObject {
             needsLicense = false
             runUpdate()
             checkSound()
+            checkMachine()
         }
+    }
+
+    /// fit.py's tier for this Mac sets an expectation only: a constrained Mac (below 16 GB) is told before Play that
+    /// the first start builds the Forge asset library and can take a long time. It never blocks Play, and a missing or
+    /// failing fit.py leaves the window silent rather than guessing.
+    func checkMachine() {
+        keep(python("fit.py", ["--json"], onLine: { [self] line in
+            memoryNotice = startupExpectation(tier: machineTier(fitJSON: line))
+        }, onExit: { _ in }))
     }
 
     /// The local network addresses Reclaimer needs (added by a startup task) can go missing, e.g. right after a restart

@@ -391,7 +391,8 @@ class HelperTest(unittest.TestCase):
             "print(subprocess.run([sys.executable, '-I', '-c', 'import sys; ' + child, sys.argv[1]],\n"
             "                     capture_output=True, text=True).stdout.strip())\n"),
             # (a version no real game has, so a game running on this Mac can't make the test pass)
-            str(HELPER), "project-reclaimer-v9.9.99.exe game-client"], env=self.env, capture_output=True, text=True)
+            str(HELPER), "project-reclaimer-v9.9.99.exe game-client"],
+            env=self.env, capture_output=True, text=True, cwd=self.home)  # (the game this helper looks for starts here)
         self.assertEqual(game.stdout.strip(), "True", game.stderr)
 
     def test_launcher_posts_the_notifications_when_it_is_running(self):

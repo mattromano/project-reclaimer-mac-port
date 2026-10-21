@@ -17,6 +17,7 @@ updates never stop the game from starting.
 """
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -83,8 +84,16 @@ def sha256(path):
     return h.hexdigest()
 
 
+# game_process.py from this install: the one rule for which running processes are this installation's game, shared
+# with tools.py so the two cannot disagree. Loaded by exact path, because `/usr/bin/python3 -I` leaves the script's
+# own folder off sys.path (and adding it would let a file beside it stand in for a stdlib module; see presets.py).
+_spec = importlib.util.spec_from_file_location("game_process", Path(__file__).resolve().parent / "game_process.py")
+game_process = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(game_process)
+
+
 def game_running():
-    return subprocess.run(["pgrep", "-a", "-f", GAME_PROCESS], capture_output=True).returncode == 0  # (-a: see helper)
+    return game_process.running(GAME_PROCESS, BASE)
 
 
 # ---------------------------------------------------------------------------------------------------------------

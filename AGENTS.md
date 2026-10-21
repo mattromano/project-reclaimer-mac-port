@@ -18,6 +18,8 @@ Pointers for contributors and coding agents. The README is for players; this fil
 - Players get a change only when `VERSION` on main goes up; the maintainer bumps it.
 - Tests and experiments never touch a real install (`~/Games/ProjectReclaimer`, `~/Applications`): use a throwaway `RECLAIMER_HOME` / `RECLAIMER_APPS_DIR`.
 - Process matches (`pgrep`/`pkill`) name this install or a test path, never a bare script or app name.
+- Merge `main` and re-run the checks before asking for review: `main` moves, and a green run from before the move proves nothing about the merge.
+- Tickets that touch the same files do not run in parallel, whatever the dependency graph says: independent in the plan, conflicting on disk.
 
 ## Traps
 - The helper scripts run as `/usr/bin/python3 -I`: their own folder isn't on `sys.path`, so importing a sibling script needs `sys.path.insert(0, <its folder>)` (see `presets.py`).

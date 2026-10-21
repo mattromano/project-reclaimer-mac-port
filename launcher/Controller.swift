@@ -5,14 +5,31 @@ import SwiftUI
 import IOKit.hid
 import GameController
 
+struct AxisID: Hashable, Comparable {
+    let page: Int
+    let usage: Int
+
+    static func < (lhs: AxisID, rhs: AxisID) -> Bool {
+        if lhs.page != rhs.page { return lhs.page < rhs.page }
+        return lhs.usage < rhs.usage
+    }
+}
+
 struct ControllerDevice: Identifiable, Equatable {
     let id: String
     let device: IOHIDDevice
     let name: String
     let vendorId: Int
     let productId: Int
+    let versionNumber: Int
     let guid: String
-    let is8BitDo: Bool
+    let axes: [AxisID]  // the pad's axes in SDL's order (read once: element lookups are slow)
+
+    var isNintendo: Bool { vendorId == 0x057E }
+    var isXbox: Bool { vendorId == 0x045E }
+    var isSony: Bool { vendorId == 0x054C }
+    // ponytail: knownLayout covers first-party pads (Microsoft, Sony, Nintendo) handled by SDL's HIDAPI
+    var canRemap: Bool { knownLayout(vendor: vendorId) == nil }
 
     static func == (lhs: ControllerDevice, rhs: ControllerDevice) -> Bool {
         lhs.id == rhs.id
@@ -24,10 +41,7 @@ final class ControllerManager: ObservableObject {
     @Published var devices: [ControllerDevice] = []
     @Published var playerAssignments: [Int] = [0, 1, 2, 3]
     @Published var selectedPlayerIndex: Int = 0 {
-        didSet {
-            loadActiveMapping()
-            resetInputState()
-        }
+        didSet { selectionChanged() }
     }
     @Published var pingingIndex: Int?
 
@@ -57,22 +71,93 @@ final class ControllerManager: ObservableObject {
 
     var displayLeftTrigger: Double {
         if let binding = activeMapping["lefttrigger"] {
-            if binding == "a5" { return leftTrigger }
-            if binding == "a4" { return rightTrigger }
+            let axes = currentDevice?.axes ?? []
+            if let idx = Int(binding.dropFirst()), axes.indices.contains(idx) {
+                let axis = axes[idx]
+                if axis.page == 2 && axis.usage == 0xC5 { return leftTrigger }
+                if axis.page == 2 && axis.usage == 0xC4 { return rightTrigger }
+                if axis.page == 1 && axis.usage == 0x32 { return leftTrigger }
+                if axis.page == 1 && axis.usage == 0x35 { return rightTrigger }
+            }
         }
         return hasActiveMapping ? leftTrigger : 0.0
     }
     var displayRightTrigger: Double {
         if let binding = activeMapping["righttrigger"] {
-            if binding == "a4" { return rightTrigger }
-            if binding == "a5" { return leftTrigger }
+            let axes = currentDevice?.axes ?? []
+            if let idx = Int(binding.dropFirst()), axes.indices.contains(idx) {
+                let axis = axes[idx]
+                if axis.page == 2 && axis.usage == 0xC4 { return rightTrigger }
+                if axis.page == 2 && axis.usage == 0xC5 { return leftTrigger }
+                if axis.page == 1 && axis.usage == 0x35 { return rightTrigger }
+                if axis.page == 1 && axis.usage == 0x32 { return leftTrigger }
+            }
         }
         return hasActiveMapping ? rightTrigger : 0.0
     }
 
+    var displayLeftStick: CGPoint {
+        var pt = leftStick
+        if activeMapping["lefty"]?.contains("~") == true {
+            pt.y = -pt.y
+        }
+        return pt
+    }
+
+    var displayRightStick: CGPoint {
+        var pt = rightStick
+        if activeMapping["righty"]?.contains("~") == true {
+            pt.y = -pt.y
+        }
+        return pt
+    }
+
+    // Calibration wizard state
+    enum CalibStep: Int, CaseIterable {
+        case a, b, x, y, lb, rb, lt, rt, back, start, l3, lup, r3, rup, done
+
+        var prompt: String {
+            prompt(for: nil)
+        }
+
+        func prompt(for dev: ControllerDevice?) -> String {
+            switch self {
+            case .a: return dev?.isNintendo == true ? "Press A (Right Button)" : "Press A (Bottom Button)"
+            case .b: return dev?.isNintendo == true ? "Press B (Bottom Button)" : "Press B (Right Button)"
+            case .x: return dev?.isNintendo == true ? "Press X (Top Button)" : "Press X (Left Button)"
+            case .y: return dev?.isNintendo == true ? "Press Y (Left Button)" : "Press Y (Top Button)"
+            case .lb: return dev?.isNintendo == true ? "Press L (Left Bumper)" : "Press LB (Left Bumper)"
+            case .rb: return dev?.isNintendo == true ? "Press R (Right Bumper)" : "Press RB (Right Bumper)"
+            case .lt: return dev?.isNintendo == true ? "Squeeze & Release ZL (Left Trigger)" : "Squeeze & Release LT (Left Trigger)"
+            case .rt: return dev?.isNintendo == true ? "Squeeze & Release ZR (Right Trigger)" : "Squeeze & Release RT (Right Trigger)"
+            case .back: return dev?.isNintendo == true ? "Press Minus (-)" : "Press Back / View / Minus"
+            case .start: return dev?.isNintendo == true ? "Press Plus (+)" : "Press Start / Menu / Plus"
+            case .l3: return "Click Left Stick (L3)"
+            case .lup: return "Push Left Stick Up"
+            case .r3: return "Click Right Stick (R3)"
+            case .rup: return "Push Right Stick Up"
+            case .done: return "Calibration Complete! Saved."
+            }
+        }
+    }
+    @Published var calibrating = false
+    @Published var currentStep: CalibStep = .a
+    @Published var statusMessage: String?
+
+    private var capturedMapping: [String: String] = [:]
     private var hidManager: IOHIDManager?
     private var gcObservers: [NSObjectProtocol] = []
     private var gcPad: GCController?  // the selected pad, when it's read through the GameController framework
+    private var canAdvanceStep = true
+    private var awaitingButtonRelease = false
+    private var triggerArmed = false
+    private var triggerAxis = AxisID(page: 0, usage: 0)
+    private var stickArmed = false
+    private var stickPeak: Double = 0.0
+    private var stickAxis = AxisID(page: 0, usage: 0)
+    private var stepArmedTime = Date()
+    private var calibratingDevice: IOHIDDevice?  // the pad a remap is for (stops if the selection changes)
+    private var pendingTriggerButton: Int?  // a button pressed on the LT/RT step: the trigger, unless an axis moved
 
     init() {
         start()
@@ -158,37 +243,23 @@ final class ControllerManager: ObservableObject {
             let vid = (IOHIDDeviceGetProperty(dev, "VendorID" as CFString) as? Int) ?? 0
             let pid = (IOHIDDeviceGetProperty(dev, "ProductID" as CFString) as? Int) ?? 0
             let usage = (IOHIDDeviceGetProperty(dev, "PrimaryUsage" as CFString) as? Int) ?? 0
-            let rawName = (IOHIDDeviceGetProperty(dev, "Product" as CFString) as? String) ?? "Game Controller"
+            let rawName = IOHIDDeviceGetProperty(dev, "Product" as CFString) as? String
 
             let virtualCopy = (IOHIDDeviceGetProperty(dev, "HIDVirtualDevice" as CFString) as? Bool) ?? false
             guard !virtualCopy, vid > 0 && pid > 0, vid != 0x05AC, (usage == 5 || usage == 4 || vid == 0x2DC8 || vid == 0x057E) else {
                 continue
             }
 
-            let name: String
-            let guid: String
-            let is8B: Bool
-
-            if vid == 0x2DC8 {
-                name = rawName.isEmpty ? "8BitDo Controller" : rawName
-                guid = "030022e4c82d00002f20000000010000"
-                is8B = true
-            } else if vid == 0x057E {
-                name = "Nintendo Switch Pro Controller"
-                guid = "030000007e0500000920000000000000"
-                is8B = false
-            } else {
-                name = rawName
-                guid = String(format: "030022e4%02x%02x0000%02x%02x000000010000",
-                              vid & 0xff, (vid >> 8) & 0xff,
-                              pid & 0xff, (pid >> 8) & 0xff)
-                is8B = false
-            }
+            let ver = (IOHIDDeviceGetProperty(dev, "VersionNumber" as CFString) as? Int) ?? 0
+            var name = sdlMappingName(rawName)
+            if vid == 0x057E && name == sdlMappingName(nil) { name = "Nintendo Switch Controller" }
+            let guid = sdlWildcardGuid(vendorId: vid, productId: pid)
 
             let id = "\(vid)-\(pid)-\(idx)"
             found.append(ControllerDevice(id: id, device: dev, name: name,
                                           vendorId: vid, productId: pid,
-                                          guid: guid, is8BitDo: is8B))
+                                          versionNumber: ver,
+                                          guid: guid, axes: axisList(of: dev)))
         }
 
         self.devices = found
@@ -201,6 +272,11 @@ final class ControllerManager: ObservableObject {
             selectedPlayerIndex = max(0, found.count - 1)
         }
         loadActiveMapping()
+    }
+
+    func selectionChanged() {
+        loadActiveMapping()
+        resetInputState()
     }
 
     private func resetInputState() {
@@ -247,27 +323,22 @@ final class ControllerManager: ObservableObject {
 
     private func loadActiveMapping() {
         defer { attachGameController() }
+        if calibrating && currentDevice?.device != calibratingDevice {
+            calibrating = false
+            statusMessage = "Remap stopped: the selected controller changed."
+        }
         guard let current = currentDevice, !current.guid.isEmpty else {
             hasActiveMapping = false
             activeMapping = [:]
             return
         }
-        let baseDir = URL(fileURLWithPath: (ProcessInfo.processInfo.environment["RECLAIMER_HOME"]
-                                            ?? "\(NSHomeDirectory())/Games/ProjectReclaimer"))
+        let baseDir = home
         let bundledDb = baseDir.appendingPathComponent("game/gamecontrollerdb.txt")
         let userMappings = baseDir.appendingPathComponent("controller-mappings.txt")
 
         hasActiveMapping = false
 
-        if current.vendorId == 0x057E {
-            hasActiveMapping = true
-            activeMapping = [
-                "a": "b0", "b": "b1", "x": "b2", "y": "b3",
-                "leftshoulder": "b6", "rightshoulder": "b7",
-                "back": "b10", "start": "b11", "guide": "b12",
-                "leftstick": "b13", "rightstick": "b14"
-            ]
-        } else if let layout = knownLayout(vendor: current.vendorId) {
+        if let layout = knownLayout(vendor: current.vendorId) {
             hasActiveMapping = true  // (the game's SDL maps these itself)
             activeMapping = layout
         } else {
@@ -284,10 +355,12 @@ final class ControllerManager: ObservableObject {
             if let content = try? String(contentsOf: path, encoding: .utf8) {
                 for line in content.components(separatedBy: .newlines).reversed() {
                     if line.starts(with: current.guid) {
+                        // (a line replaces earlier ones for this pad, as in SDL)
+                        if knownLayout(vendor: current.vendorId) == nil { activeMapping = [:] }
                         let parts = line.components(separatedBy: ",")
                         for part in parts.dropFirst(2) {
                             let kv = part.components(separatedBy: ":")
-                            if kv.count == 2 {
+                            if kv.count == 2 && kv[0] != "platform" {
                                 activeMapping[kv[0]] = kv[1]
                             }
                         }
@@ -332,12 +405,12 @@ final class ControllerManager: ObservableObject {
                 let b3 = b[3]
                 let b4 = b[4]
 
-                // Switch buttons: reflect literal button letters (matching SDL2 / Wine in-game behavior)
+                // Switch buttons: map physical buttons to raw button indices (0=A, 1=B, 2=X, 3=Y)
                 var newPressed = Set<Int>()
-                if (b2 & 0x08) != 0 { newPressed.insert(0) } // Physical A (East) -> triggers Xbox A (South on diagram)
-                if (b2 & 0x04) != 0 { newPressed.insert(1) } // Physical B (South) -> triggers Xbox B (East on diagram)
-                if (b2 & 0x02) != 0 { newPressed.insert(2) } // Physical X (North) -> triggers Xbox X (West on diagram)
-                if (b2 & 0x01) != 0 { newPressed.insert(3) } // Physical Y (West) -> triggers Xbox Y (North on diagram)
+                if (b2 & 0x08) != 0 { newPressed.insert(0) } // Physical A (East)
+                if (b2 & 0x04) != 0 { newPressed.insert(1) } // Physical B (South)
+                if (b2 & 0x02) != 0 { newPressed.insert(2) } // Physical X (North)
+                if (b2 & 0x01) != 0 { newPressed.insert(3) } // Physical Y (West)
                 if (b4 & 0x40) != 0 { newPressed.insert(6) } // LB
                 if (b2 & 0x40) != 0 { newPressed.insert(7) } // RB
                 if (b3 & 0x01) != 0 { newPressed.insert(10) } // Minus / Back
@@ -368,6 +441,29 @@ final class ControllerManager: ObservableObject {
                 leftStick.y = max(-1.0, min(1.0, -Double(rawLY - 2048) / 1400.0))
                 rightStick.x = max(-1.0, min(1.0, Double(rawRX - 2048) / 1400.0))
                 rightStick.y = max(-1.0, min(1.0, -Double(rawRY - 2048) / 1400.0))
+
+                if calibrating {
+                    if currentStep == .lt || currentStep == .rt {
+                        handleTriggerCalibration(page: 2, usage: 0xC5, value: leftTrigger)
+                        handleTriggerCalibration(page: 2, usage: 0xC4, value: rightTrigger)
+                    } else if currentStep == .lup {
+                        handleStickCalibration(page: 1, usage: 0x31, pos: leftStick.y)
+                    } else if currentStep == .rup {
+                        handleStickCalibration(page: 1, usage: 0x35, pos: rightStick.y)
+                    } else {
+                        if canAdvanceStep && !newPressed.isEmpty {
+                            if let firstBtn = newPressed.first {
+                                recordCalibrationButton(firstBtn)
+                            }
+                        } else if awaitingButtonRelease && newPressed.isEmpty {
+                            awaitingButtonRelease = false
+                            Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 50_000_000)
+                                self.canAdvanceStep = true
+                            }
+                        }
+                    }
+                }
                 return
             }
 
@@ -376,10 +472,28 @@ final class ControllerManager: ObservableObject {
                 let btn = Int(usage - 1)
                 if intVal == 1 {
                     pressedButtons.insert(btn)
+                    if calibrating && (currentStep == .lt || currentStep == .rt) {
+                        if pendingTriggerButton == nil { pendingTriggerButton = btn }
+                    } else if calibrating && currentStep != .lup && currentStep != .rup {
+                        if canAdvanceStep {
+                            recordCalibrationButton(btn)
+                        }
+                    }
                 } else {
                     pressedButtons.remove(btn)
+                    if calibrating && (currentStep == .lt || currentStep == .rt) && pendingTriggerButton == btn {
+                        pendingTriggerButton = nil
+                        if !triggerArmed { recordTrigger("b\(btn)") }  // (no axis moved: a digital trigger)
+                    } else if calibrating && awaitingButtonRelease && pressedButtons.isEmpty {
+                        awaitingButtonRelease = false
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 50_000_000)
+                            self.canAdvanceStep = true
+                        }
+                    }
                 }
-            } else if page == 1 { // Generic Desktop (Sticks / D-Pad)
+            } else if page == 1 { // Generic Desktop (Sticks / D-Pad / 360 Triggers)
+                let is360Style = currentDevice?.axes.contains(AxisID(page: 1, usage: 0x34)) == true
                 if usage == 0x39 { // Hat switch (D-Pad)
                     let hat = hatDirections(intVal, min: lo, max: hi)
                     dpadState = (hat.up, hat.down, hat.left, hat.right)
@@ -387,19 +501,160 @@ final class ControllerManager: ObservableObject {
                     leftStick.x = stickPosition(intVal, min: lo, max: hi)
                 } else if usage == 0x31 { // Y axis
                     leftStick.y = stickPosition(intVal, min: lo, max: hi)
-                } else if usage == 0x32 { // Z axis / Right Stick X
-                    rightStick.x = stickPosition(intVal, min: lo, max: hi)
-                } else if usage == 0x35 { // Rz axis / Right Stick Y
+                    handleStickCalibration(page: 1, usage: Int(usage), pos: leftStick.y)
+                } else if usage == 0x32 { // Z axis
+                    if is360Style {
+                        leftTrigger = axisFraction(intVal, min: lo, max: hi)
+                        handleTriggerCalibration(page: 1, usage: 0x32, value: leftTrigger)
+                    } else {
+                        rightStick.x = stickPosition(intVal, min: lo, max: hi)
+                    }
+                } else if usage == 0x33 { // Rx axis (Right Stick X on 360 pads)
+                    if is360Style {
+                        rightStick.x = stickPosition(intVal, min: lo, max: hi)
+                    }
+                } else if usage == 0x34 { // Ry axis (wired Xbox 360 Right Stick Y)
                     rightStick.y = stickPosition(intVal, min: lo, max: hi)
+                    handleStickCalibration(page: 1, usage: Int(usage), pos: rightStick.y)
+                } else if usage == 0x35 { // Rz axis
+                    if is360Style {
+                        rightTrigger = axisFraction(intVal, min: lo, max: hi)
+                        handleTriggerCalibration(page: 1, usage: 0x35, value: rightTrigger)
+                    } else {
+                        rightStick.y = stickPosition(intVal, min: lo, max: hi)
+                        handleStickCalibration(page: 1, usage: Int(usage), pos: rightStick.y)
+                    }
                 }
-            } else if page == 2 { // Simulation controls (Triggers)
+            } else if page == 2 { // Simulation controls (Triggers on 8BitDo / standard HID)
                 if usage == 0xC5 { // Left Trigger (Brake)
                     leftTrigger = axisFraction(intVal, min: lo, max: hi)
+                    handleTriggerCalibration(page: 2, usage: 0xC5, value: leftTrigger)
                 } else if usage == 0xC4 { // Right Trigger (Accelerator)
                     rightTrigger = axisFraction(intVal, min: lo, max: hi)
+                    handleTriggerCalibration(page: 2, usage: 0xC4, value: rightTrigger)
                 }
             }
         }
+    }
+
+    /// The pad's axes in the order SDL's IOKit driver numbers them (sorted by usage; Generic Desktop X…Wheel, then
+    /// Simulation rudder, throttle, accelerator and brake).
+    private func axisList(of device: IOHIDDevice) -> [AxisID] {
+        let fallback = [AxisID(page: 1, usage: 0x30), AxisID(page: 1, usage: 0x31),
+                        AxisID(page: 1, usage: 0x32), AxisID(page: 1, usage: 0x35)]
+        guard let elements = IOHIDDeviceCopyMatchingElements(device, nil, 0) as? [IOHIDElement] else { return fallback }
+        var axes = Set<AxisID>()
+        for elem in elements {
+            let type = IOHIDElementGetType(elem)
+            guard type == kIOHIDElementTypeInput_Axis || type == kIOHIDElementTypeInput_Misc else { continue }
+            let page = Int(IOHIDElementGetUsagePage(elem))
+            let usage = Int(IOHIDElementGetUsage(elem))
+            if (page == 1 && (0x30...0x38).contains(usage)) || (page == 2 && [0xBA, 0xBB, 0xC4, 0xC5].contains(usage)) {
+                axes.insert(AxisID(page: page, usage: usage))
+            }
+        }
+        return axes.isEmpty ? fallback : axes.sorted()
+    }
+
+    private func handleTriggerCalibration(page: Int, usage: Int, value: Double) {
+        guard calibrating, currentStep == .lt || currentStep == .rt, let dev = currentDevice else { return }
+        let currentAxis = AxisID(page: page, usage: usage)
+        if value > 0.5 {
+            triggerArmed = true
+            triggerAxis = currentAxis
+        } else if value < 0.2 && triggerArmed {
+            triggerArmed = false
+            let target = triggerAxis.page > 0 ? triggerAxis : currentAxis
+            triggerAxis = AxisID(page: 0, usage: 0)
+            if let idx = dev.axes.firstIndex(of: target) { recordTrigger("a\(idx)") }  // (else: Skip)
+        }
+    }
+
+    /// LT or RT captured: an axis ("aN") or, for a digital trigger, a button ("bN").
+    private func recordTrigger(_ binding: String) {
+        pendingTriggerButton = nil
+        triggerArmed = false
+        if currentStep == .lt {
+            capturedMapping["lefttrigger"] = binding
+            currentStep = .rt
+            stepArmedTime = Date()
+        } else if currentStep == .rt {
+            capturedMapping["righttrigger"] = binding
+            currentStep = .back
+            canAdvanceStep = false
+            awaitingButtonRelease = false
+            stepArmedTime = Date()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                self.canAdvanceStep = true
+            }
+        }
+    }
+
+    private func handleStickCalibration(page: Int, usage: Int, pos: Double) {
+        guard calibrating, let dev = currentDevice else { return }
+        let currentAxis = AxisID(page: page, usage: usage)
+        if currentStep == .lup {
+            if abs(pos) > 0.6 {
+                stickArmed = true
+                if abs(pos) > abs(stickPeak) {
+                    stickPeak = pos
+                    stickAxis = currentAxis
+                }
+            } else if abs(pos) < 0.25 && stickArmed {
+                stickArmed = false
+                let axes = dev.axes
+                let yAxis = stickAxis.page > 0 ? stickAxis : currentAxis
+                let yIndex = axes.firstIndex(of: yAxis) ?? 1
+                let xIndex = axes.firstIndex(of: AxisID(page: 1, usage: 0x30)) ?? 0
+                capturedMapping["leftx"] = "a\(xIndex)"
+                capturedMapping["lefty"] = "a\(yIndex)\(stickPeak > 0 ? "~" : "")"
+                stickPeak = 0.0
+                stickAxis = AxisID(page: 0, usage: 0)
+                currentStep = .r3
+                canAdvanceStep = false
+                awaitingButtonRelease = false
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    self.canAdvanceStep = true
+                }
+            }
+        } else if currentStep == .rup {
+            if abs(pos) > 0.6 {
+                stickArmed = true
+                if abs(pos) > abs(stickPeak) {
+                    stickPeak = pos
+                    stickAxis = currentAxis
+                }
+            } else if abs(pos) < 0.25 && stickArmed {
+                stickArmed = false
+                let axes = dev.axes
+                let yAxis = stickAxis.page > 0 ? stickAxis : currentAxis
+                let yIndex = axes.firstIndex(of: yAxis) ?? (axes.count > 4 ? 4 : 3)
+                let xUsage = (yAxis.usage == 0x34) ? 0x33 : 0x32
+                let xIndex = axes.firstIndex(of: AxisID(page: 1, usage: xUsage)) ?? (yIndex - 1)
+                capturedMapping["rightx"] = "a\(xIndex)"
+                capturedMapping["righty"] = "a\(yIndex)\(stickPeak > 0 ? "~" : "")"
+                stickPeak = 0.0
+                stickAxis = AxisID(page: 0, usage: 0)
+                finishCalibration()
+            }
+        }
+    }
+
+    private func finishCalibration() {
+        if capturedMapping["dpup"] == nil { capturedMapping["dpup"] = activeMapping["dpup"] ?? "h0.1" }
+        if capturedMapping["dpdown"] == nil { capturedMapping["dpdown"] = activeMapping["dpdown"] ?? "h0.4" }
+        if capturedMapping["dpleft"] == nil { capturedMapping["dpleft"] = activeMapping["dpleft"] ?? "h0.8" }
+        if capturedMapping["dpright"] == nil { capturedMapping["dpright"] = activeMapping["dpright"] ?? "h0.2" }
+        if capturedMapping["leftx"] == nil { capturedMapping["leftx"] = activeMapping["leftx"] ?? "a0" }
+        if capturedMapping["lefty"] == nil { capturedMapping["lefty"] = activeMapping["lefty"] ?? "a1" }
+        if capturedMapping["rightx"] == nil { capturedMapping["rightx"] = activeMapping["rightx"] ?? "a2" }
+        if capturedMapping["righty"] == nil { capturedMapping["righty"] = activeMapping["righty"] ?? "a3" }
+        saveMapping()
+        currentStep = .done
+        calibrating = false
+        statusMessage = "Mapping saved for \(currentDevice?.name ?? "controller")!"
     }
 
     func ping(playerIdx: Int) {
@@ -409,7 +664,7 @@ final class ControllerManager: ObservableObject {
         pingingIndex = playerIdx
 
         Task.detached {
-            if dev.is8BitDo {
+            if dev.vendorId == 0x2DC8 {
                 var pkt: [UInt8] = [0x05, 0xff, 0xff, 0x64, 0x64]
                 IOHIDDeviceSetReport(dev.device, kIOHIDReportTypeOutput, 0x05, &pkt, pkt.count)
                 try? await Task.sleep(nanoseconds: 400_000_000)
@@ -431,6 +686,140 @@ final class ControllerManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: 400_000_000)
             }
             await MainActor.run { self.pingingIndex = nil }
+        }
+    }
+
+    func startCalibration() {
+        calibrating = true
+        calibratingDevice = currentDevice?.device
+        pendingTriggerButton = nil
+        currentStep = .a
+        capturedMapping = hasActiveMapping ? activeMapping : [:]  // (what was mapped before, never the raw view's guesses)
+        canAdvanceStep = true
+        awaitingButtonRelease = false
+        triggerArmed = false
+        triggerAxis = AxisID(page: 0, usage: 0)
+        stickArmed = false
+        stickPeak = 0.0
+        stickAxis = AxisID(page: 0, usage: 0)
+        stepArmedTime = Date()
+        statusMessage = nil
+    }
+
+    func skipStep() {
+        guard calibrating else { return }
+        canAdvanceStep = true
+        pendingTriggerButton = nil
+        awaitingButtonRelease = false
+        triggerArmed = false
+        triggerAxis = AxisID(page: 0, usage: 0)
+        stickArmed = false
+        stickPeak = 0.0
+        stickAxis = AxisID(page: 0, usage: 0)
+        stepArmedTime = Date()
+
+        switch currentStep {
+        case .a: currentStep = .b
+        case .b: currentStep = .x
+        case .x: currentStep = .y
+        case .y: currentStep = .lb
+        case .lb: currentStep = .rb
+        case .rb: currentStep = .lt
+        case .lt: currentStep = .rt
+        case .rt: currentStep = .back
+        case .back: currentStep = .start
+        case .start: currentStep = .l3
+        case .l3: currentStep = .lup
+        case .lup: currentStep = .r3
+        case .r3: currentStep = .rup
+        case .rup: finishCalibration()
+        default: break
+        }
+    }
+
+    private func recordCalibrationButton(_ button: Int) {
+        guard calibrating, canAdvanceStep else { return }
+        canAdvanceStep = false
+        awaitingButtonRelease = true
+        stepArmedTime = Date()
+
+        switch currentStep {
+        case .a: capturedMapping["a"] = "b\(button)"; currentStep = .b
+        case .b: capturedMapping["b"] = "b\(button)"; currentStep = .x
+        case .x: capturedMapping["x"] = "b\(button)"; currentStep = .y
+        case .y: capturedMapping["y"] = "b\(button)"; currentStep = .lb
+        case .lb: capturedMapping["leftshoulder"] = "b\(button)"; currentStep = .rb
+        case .rb: capturedMapping["rightshoulder"] = "b\(button)"; currentStep = .lt
+        case .lt: break
+        case .rt: break
+        case .back: capturedMapping["back"] = "b\(button)"; currentStep = .start
+        case .start: capturedMapping["start"] = "b\(button)"; currentStep = .l3
+        case .l3:
+            capturedMapping["leftstick"] = "b\(button)"
+            currentStep = .lup
+            canAdvanceStep = false
+            awaitingButtonRelease = false
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                self.canAdvanceStep = true
+            }
+        case .lup: break
+        case .r3:
+            capturedMapping["rightstick"] = "b\(button)"
+            currentStep = .rup
+            canAdvanceStep = false
+            awaitingButtonRelease = false
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                self.canAdvanceStep = true
+            }
+        case .rup: break
+        default: break
+        }
+    }
+
+    private func saveMapping() {
+        guard let current = currentDevice, !current.guid.isEmpty else { return }
+        activeMapping = capturedMapping
+        let mapEntries = capturedMapping
+            .filter { $0.key != "platform" }
+            .map { "\($0.key):\($0.value)" }
+            .joined(separator: ",")
+        let safeName = sdlMappingName(current.name)
+        let wildcardGuid = sdlWildcardGuid(vendorId: current.vendorId, productId: current.productId)
+        var newLines = ["\(wildcardGuid),\(safeName),\(mapEntries),platform:Mac OS X,\n"]
+        var guidsToRemove = [wildcardGuid]
+        if current.versionNumber != 0 {
+            let verGuid = sdlGuid(vendorId: current.vendorId, productId: current.productId, version: current.versionNumber)
+            if verGuid != wildcardGuid {
+                newLines.append("\(verGuid),\(safeName),\(mapEntries),platform:Mac OS X,\n")
+                guidsToRemove.append(verGuid)
+            }
+        }
+        let addedText = newLines.joined()
+
+        // Calibrations live in ~/Games/ProjectReclaimer/controller-mappings.txt so installer updates never touch them
+        let baseDir = home
+        let userMappingsPath = baseDir.appendingPathComponent("controller-mappings.txt")
+
+        if let existing = try? String(contentsOf: userMappingsPath, encoding: .utf8) {
+            let filtered = existing.components(separatedBy: .newlines).filter { line in
+                !guidsToRemove.contains { line.starts(with: $0) } && !line.isEmpty
+            }.joined(separator: "\n")
+            try? (filtered.isEmpty ? addedText : filtered + "\n" + addedText).write(to: userMappingsPath, atomically: true, encoding: .utf8)
+        } else {
+            try? addedText.write(to: userMappingsPath, atomically: true, encoding: .utf8)
+        }
+
+        // Refresh controller-mappings-active.txt so active mappings exist immediately for Wine
+        let activePath = baseDir.appendingPathComponent("controller-mappings-active.txt")
+        let bundledPath = baseDir.appendingPathComponent("game/gamecontrollerdb.txt")
+        var merged = (try? String(contentsOf: bundledPath, encoding: .utf8)) ?? ""
+        if let userText = try? String(contentsOf: userMappingsPath, encoding: .utf8) {
+            merged += (merged.isEmpty ? "" : "\n") + userText
+        }
+        if !merged.isEmpty {
+            try? merged.write(to: activePath, atomically: true, encoding: .utf8)
         }
     }
 }
@@ -469,6 +858,8 @@ struct StickGimbal: View {
     let label: String
     let stick: CGPoint
     let isPressed: Bool
+    var highlighted: Bool = false
+    var showUpArrow: Bool = false
 
     private var isDeflected: Bool {
         hypot(stick.x, stick.y) > 0.08
@@ -478,13 +869,21 @@ struct StickGimbal: View {
         VStack(spacing: 2) {
             ZStack {
                 Circle()
-                    .strokeBorder(isPressed || isDeflected ? accent : Color(nsColor: .separatorColor), lineWidth: 2)
-                    .background(Circle().fill(Color(nsColor: .controlBackgroundColor)))
+                    .strokeBorder(isPressed || isDeflected || highlighted ? accent : Color(nsColor: .separatorColor),
+                                  lineWidth: highlighted ? 2.5 : 2)
+                    .background(Circle().fill(highlighted ? accent.opacity(0.15) : Color(nsColor: .controlBackgroundColor)))
                     .frame(width: 48, height: 48)
 
                 Circle()
                     .fill(Color(nsColor: .tertiaryLabelColor).opacity(0.3))
                     .frame(width: 4, height: 4)
+
+                if showUpArrow {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(accent)
+                        .offset(y: -14)
+                }
 
                 Circle()
                     .fill(isPressed || isDeflected ? accent : Color.white)
@@ -492,7 +891,7 @@ struct StickGimbal: View {
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                     .offset(x: CGFloat(stick.x) * 14, y: CGFloat(stick.y) * 14)
             }
-            Text(label).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+            Text(label).font(.system(size: 9, weight: .bold)).foregroundStyle(highlighted ? accent : .secondary)
         }
     }
 }
@@ -500,19 +899,23 @@ struct StickGimbal: View {
 struct TriggerBar: View {
     let label: String
     let value: Double
+    var highlighted: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
             RoundedRectangle(cornerRadius: 5)
                 .fill(Color(nsColor: .controlBackgroundColor))
                 .frame(width: 38, height: 26)
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(nsColor: .separatorColor), lineWidth: 1.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(highlighted ? accent : Color(nsColor: .separatorColor), lineWidth: highlighted ? 2 : 1.5)
+                )
             RoundedRectangle(cornerRadius: 4)
                 .fill(accent)
                 .frame(width: 35, height: max(2, CGFloat(value) * 23))
             Text(label)
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(value > 0.4 ? .white : .secondary)
+                .foregroundStyle(value > 0.4 ? .white : (highlighted ? accent : .secondary))
                 .padding(.bottom, 4)
         }
     }
@@ -612,6 +1015,8 @@ struct ControllerSheet: View {
                     .padding(8)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor).opacity(0.6)))
 
+                    let isNintendo = dev.isNintendo
+
                     // 1:1 Vector Gamepad Canvas
                     ZStack {
                         ExactXboxBodyShape()
@@ -623,19 +1028,32 @@ struct ControllerSheet: View {
                             .shadow(color: .black.opacity(0.22), radius: 8, y: 4)
 
                         // 1. Left Trigger & Bumper
-                        TriggerBar(label: "LT", value: c.displayLeftTrigger)
+                        TriggerBar(label: isNintendo ? "ZL" : "LT",
+                                   value: c.displayLeftTrigger,
+                                   highlighted: c.calibrating && c.currentStep == .lt)
                             .position(x: 138.5 * s, y: 26 * s)
-                        buttonBadge("LB", active: c.isActionPressed("leftshoulder"), w: 42, h: 18)
+                        buttonBadge(isNintendo ? "L" : "LB",
+                                    active: c.isActionPressed("leftshoulder"),
+                                    w: 42, h: 18,
+                                    highlighted: c.calibrating && c.currentStep == .lb)
                             .position(x: 132.0 * s, y: 64 * s)
 
                         // 2. Right Trigger & Bumper
-                        TriggerBar(label: "RT", value: c.displayRightTrigger)
+                        TriggerBar(label: isNintendo ? "ZR" : "RT",
+                                   value: c.displayRightTrigger,
+                                   highlighted: c.calibrating && c.currentStep == .rt)
                             .position(x: 303.5 * s, y: 26 * s)
-                        buttonBadge("RB", active: c.isActionPressed("rightshoulder"), w: 42, h: 18)
+                        buttonBadge(isNintendo ? "R" : "RB",
+                                    active: c.isActionPressed("rightshoulder"),
+                                    w: 42, h: 18,
+                                    highlighted: c.calibrating && c.currentStep == .rb)
                             .position(x: 310.0 * s, y: 64 * s)
 
                         // 3. Left Thumbstick
-                        StickGimbal(label: "LS (L3)", stick: c.leftStick, isPressed: c.isActionPressed("leftstick"))
+                        StickGimbal(label: "LS (L3)", stick: c.displayLeftStick,
+                                    isPressed: c.isActionPressed("leftstick"),
+                                    highlighted: c.calibrating && (c.currentStep == .l3 || c.currentStep == .lup),
+                                    showUpArrow: c.calibrating && c.currentStep == .lup)
                             .position(x: 113 * s, y: 160 * s)
 
                         // 4. D-Pad
@@ -666,44 +1084,114 @@ struct ControllerSheet: View {
                         .position(x: 220.5 * s, y: 130 * s)
 
                         VStack(spacing: 2) {
-                            buttonBadge("◀", active: c.isActionPressed("back"), w: 26, h: 18)
-                            Text("Back").font(.system(size: 8)).foregroundStyle(.secondary)
+                            buttonBadge(isNintendo ? "-" : "◀",
+                                        active: c.isActionPressed("back"),
+                                        w: 26, h: 18,
+                                        highlighted: c.calibrating && c.currentStep == .back)
+                            Text(isNintendo ? "Minus" : "Back")
+                                .font(.system(size: 8))
+                                .foregroundStyle(c.calibrating && c.currentStep == .back ? accent : .secondary)
                         }
                         .position(x: 185 * s, y: 162 * s)
 
                         VStack(spacing: 2) {
-                            buttonBadge("▶", active: c.isActionPressed("start"), w: 26, h: 18)
-                            Text("Start").font(.system(size: 8)).foregroundStyle(.secondary)
+                            buttonBadge(isNintendo ? "+" : "▶",
+                                        active: c.isActionPressed("start"),
+                                        w: 26, h: 18,
+                                        highlighted: c.calibrating && c.currentStep == .start)
+                            Text(isNintendo ? "Plus" : "Start")
+                                .font(.system(size: 8))
+                                .foregroundStyle(c.calibrating && c.currentStep == .start ? accent : .secondary)
                         }
                         .position(x: 259 * s, y: 162 * s)
 
                         // 6. Face Buttons ABXY
-                        buttonBadge("Y", active: c.isActionPressed("y"), w: 24, h: 22)
+                        buttonBadge(isNintendo ? "X" : "Y",
+                                    active: isNintendo ? c.isActionPressed("x") : c.isActionPressed("y"),
+                                    w: 24, h: 22,
+                                    highlighted: c.calibrating && (isNintendo ? c.currentStep == .x : c.currentStep == .y))
                             .position(x: 329 * s, y: (160 - 26) * s)
-                        buttonBadge("X", active: c.isActionPressed("x"), w: 24, h: 22)
+                        buttonBadge(isNintendo ? "Y" : "X",
+                                    active: isNintendo ? c.isActionPressed("y") : c.isActionPressed("x"),
+                                    w: 24, h: 22,
+                                    highlighted: c.calibrating && (isNintendo ? c.currentStep == .y : c.currentStep == .x))
                             .position(x: (329 - 26) * s, y: 160 * s)
-                        buttonBadge("B", active: c.isActionPressed("b"), w: 24, h: 22)
+                        buttonBadge(isNintendo ? "A" : "B",
+                                    active: isNintendo ? c.isActionPressed("a") : c.isActionPressed("b"),
+                                    w: 24, h: 22,
+                                    highlighted: c.calibrating && (isNintendo ? c.currentStep == .a : c.currentStep == .b))
                             .position(x: (329 + 26) * s, y: 160 * s)
-                        buttonBadge("A", active: c.isActionPressed("a"), w: 24, h: 22)
+                        buttonBadge(isNintendo ? "B" : "A",
+                                    active: isNintendo ? c.isActionPressed("b") : c.isActionPressed("a"),
+                                    w: 24, h: 22,
+                                    highlighted: c.calibrating && (isNintendo ? c.currentStep == .b : c.currentStep == .a))
                             .position(x: 329 * s, y: (160 + 26) * s)
 
                         // 7. Right Thumbstick
-                        StickGimbal(label: "RS (R3)", stick: c.rightStick, isPressed: c.isActionPressed("rightstick"))
+                        StickGimbal(label: "RS (R3)", stick: c.displayRightStick,
+                                    isPressed: c.isActionPressed("rightstick"),
+                                    highlighted: c.calibrating && (c.currentStep == .r3 || c.currentStep == .rup),
+                                    showUpArrow: c.calibrating && c.currentStep == .rup)
                             .position(x: 278 * s, y: 238 * s)
                     }
                     .frame(width: 390, height: 356)
                     .frame(maxWidth: .infinity, alignment: .center)
 
-                    // Help Footer
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("Press buttons, move sticks, and pull triggers to verify controller response before Play.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    // Calibration Area with Skip Option
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                if c.calibrating {
+                                    Text(c.currentStep.prompt(for: dev))
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(accent)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(isNintendo
+                                         ? "Press buttons as labeled on your controller. You can switch to Xbox Layout (Bottom = A) at any time."
+                                         : "Follow the prompts. Press each button on the selected controller, or click Skip.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } else if dev.canRemap {
+                                    Text("Controller Mapping").font(.subheadline.bold())
+                                    Text("Controls feel swapped or inverted? Run calibration for Player \(c.selectedPlayerIndex + 1).")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } else {
+                                    Text("Controller Mapping").font(.subheadline.bold())
+                                    Text("This controller is already supported by the game.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            Spacer()
+                            if c.calibrating {
+                                HStack(spacing: 8) {
+                                    Button("Skip") { c.skipStep() }
+                                        .controlSize(.regular)
+                                        .help("Skip this input if your controller does not have this button")
+                                    Button("Cancel") { c.calibrating = false }
+                                        .controlSize(.regular)
+                                }
+                            } else if dev.canRemap {
+                                Button("Remap Player \(c.selectedPlayerIndex + 1)") { c.startCalibration() }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(accent)
+                            } else {
+                                Text("Supported by game")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let msg = c.statusMessage {
+                            Text(msg)
+                                .font(.caption.bold())
+                                .foregroundStyle(accent)
+                        }
                     }
-                    .padding(.top, 4)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
                 }
 
             } else {
@@ -742,16 +1230,24 @@ struct ControllerSheet: View {
             set: { newDevIdx in
                 if c.playerAssignments.indices.contains(playerIdx) {
                     c.playerAssignments[playerIdx] = newDevIdx
+                    c.selectionChanged()
                 }
             }
         )
     }
 
-    private func buttonBadge(_ text: String, active: Bool, w: CGFloat = 26, h: CGFloat = 22) -> some View {
+    private func buttonBadge(_ text: String, active: Bool, w: CGFloat = 26, h: CGFloat = 22, highlighted: Bool = false) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .bold))
             .frame(width: w, height: h)
-            .background(RoundedRectangle(cornerRadius: 5).fill(active ? accent : Color(nsColor: .tertiaryLabelColor).opacity(0.2)))
-            .foregroundStyle(active ? .white : .primary)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(active ? accent : (highlighted ? accent.opacity(0.3) : Color(nsColor: .tertiaryLabelColor).opacity(0.2)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(highlighted ? accent : Color.clear, lineWidth: highlighted ? 2 : 0)
+            )
+            .foregroundStyle(active ? .white : (highlighted ? accent : .primary))
     }
 }

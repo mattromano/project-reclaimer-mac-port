@@ -558,12 +558,33 @@ def remove_game(gid):
 ADDRESS = re.compile(r"[A-Za-z0-9.-]+:\d{1,5}")
 
 
+def controller_mappings_file():
+    """Bundled database, plus any user calibrations from the launcher (as run.sh does)."""
+    bundled = GAME / "gamecontrollerdb.txt"
+    user = BASE / "controller-mappings.txt"
+    db = bundled
+    if user.is_file():
+        db = BASE / "controller-mappings-active.txt"
+        parts = []
+        if bundled.is_file():
+            parts.append(bundled.read_text("utf-8", errors="ignore"))
+        parts.append(user.read_text("utf-8", errors="ignore"))
+        try:
+            db.write_text("\n".join(parts), "utf-8")
+        except OSError:
+            pass
+    return str(db) if db.is_file() and db.stat().st_size > 0 else None
+
+
 def game_env():
     """Wine settings as run.sh uses them, for asking the game something without opening it."""
     env = dict(os.environ, WINEPREFIX=str(BASE / "prefix-wine"), WINEDEBUG="-all", MVK_CONFIG_LOG_LEVEL="0",
                WINEDLLOVERRIDES="opengl32=n,b;xaudio2_9=d;d3d11,d3d10core=n,b")
     # ~/.zshenv may inject an arm64 DYLD shim (libnomallocstacklogging) globally; Wine runs as an x86_64/Rosetta binary.
     env.pop("DYLD_INSERT_LIBRARIES", None)
+    db = controller_mappings_file()
+    if db:
+        env["SDL_GAMECONTROLLERCONFIG_FILE"] = db
     return env
 
 

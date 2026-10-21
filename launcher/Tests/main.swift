@@ -223,7 +223,14 @@ check(hatDirections(0, min: 0, max: 7) == HatDirections(up: true) && hatDirectio
 // the controller window draws an Xbox controller's buttons where they are (not as an unmapped pad)
 check(knownLayout(vendor: 0x045E)?["x"] == "b3" && knownLayout(vendor: 0x045E)?["y"] == "b4"
       && knownLayout(vendor: 0x045E)?["leftshoulder"] == "b6", "Xbox layout")
+check(knownLayout(vendor: 0x057E)?["a"] == "b0" && knownLayout(vendor: 0x057E)?["b"] == "b1"
+      && knownLayout(vendor: 0x057E)?["x"] == "b2", "Nintendo layout")
 check(knownLayout(vendor: 0x1234) == nil, "unknown pads keep the unmapped view")
+check(sdlWildcardGuid(vendorId: 0x057E, productId: 0x2009) == "030000007e0500000920000000000000", "Wildcard GUID")
+check(sdlGuid(vendorId: 0x045E, productId: 0x028E, version: 0x0110) == "030000005e0400008e02000010010000", "Versioned GUID")
+// a device's name goes into a comma-separated, one-per-line SDL mapping: it can't add fields or lines
+check(sdlMappingName("Evil,pad\nguid,x,a:b0\r\u{0}") == "Evil pad guid x a:b0", "mapping name can't inject lines")
+check(sdlMappingName("  \n") == "Game Controller" && sdlMappingName(nil) == "Game Controller", "empty names get a default")
 
 // PlayStation pads are read through Apple's GameController framework, in its standard button order
 check(readsThroughGameController(vendor: 0x054C) && !readsThroughGameController(vendor: 0x045E)

@@ -37,7 +37,7 @@ SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # 
 # root can write, so a file swapped in the meantime never runs at boot (also in tools.py; the tests check all match)
 LOOPBACK_SHA=23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83
 LOOPBACK_PLIST_SHA=27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd
-LAUNCHER_SHA=a36ffe0fe5897aa4ad1f417d6a2986e5b27990e8e689da79f6e7e22f46e506d2  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
+LAUNCHER_SHA=c15000f1b528d509c1049c0c266ce004b19ad2e31d0cf4d91b625e4dd79b2cd6  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
 GUI=${RECLAIMER_GUI:-}
 # give up on a stalled connection instead of hanging (the launcher waits for this when updating)
@@ -162,7 +162,7 @@ note "ok"
 
 bold "Game scripts and Workshop mod helper"
 # (the network files are kept here too, so the window's network fix can reinstall the startup task)
-for f in run.sh launch.sh workshop_helper.py presets.py fit.py game_process.py updater.py tools.py reclaimer-loopback.sh \
+for f in run.sh launch.sh gamecontrollerdb.txt workshop_helper.py presets.py fit.py game_process.py updater.py tools.py reclaimer-loopback.sh \
          local.projectreclaimer.loopback.plist; do script_file "scripts/$f" "$BASE/game/$f"; done
 chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py" \
   "$BASE/game/tools.py"

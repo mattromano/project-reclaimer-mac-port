@@ -719,6 +719,28 @@ class ToolsTest(unittest.TestCase):
         self.assertTrue(out[-1].startswith("error: "))
         self.assertTrue(self.tmp.exists())
 
+    def test_game_env_sets_sdl_controller_config_file_when_mappings_exist(self):
+        spec = importlib.util.spec_from_file_location("tools", str(self.home / "game" / "tools.py"))
+        tools = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"RECLAIMER_HOME": str(self.home)}):
+            spec.loader.exec_module(tools)
+            (tools.GAME / "gamecontrollerdb.txt").write_text("guid,bundled,platform:Mac OS X,\n")
+            (tools.BASE / "controller-mappings.txt").write_text("guid,user,platform:Mac OS X,\n")
+            env = tools.game_env()
+            self.assertEqual(env.get("SDL_GAMECONTROLLERCONFIG_FILE"), str(tools.BASE / "controller-mappings-active.txt"))
+            self.assertIn("guid,user", (tools.BASE / "controller-mappings-active.txt").read_text())
+
+    def test_game_env_leaves_sdl_controller_config_file_unset_when_no_mappings(self):
+        spec = importlib.util.spec_from_file_location("tools", str(self.home / "game" / "tools.py"))
+        tools = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"RECLAIMER_HOME": str(self.home)}):
+            spec.loader.exec_module(tools)
+            (tools.GAME / "gamecontrollerdb.txt").unlink(missing_ok=True)
+            (tools.BASE / "controller-mappings.txt").unlink(missing_ok=True)
+            (tools.BASE / "controller-mappings-active.txt").unlink(missing_ok=True)
+            env = tools.game_env()
+            self.assertNotIn("SDL_GAMECONTROLLERCONFIG_FILE", env)
+
 
 if __name__ == "__main__":
     unittest.main()

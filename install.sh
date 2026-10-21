@@ -33,7 +33,7 @@ MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
-LAUNCHER_SHA=7db48a60364e9a7f05b7e1c3e2c1fd8a7a482fa1023e0d9c8e176339bd97e3c8  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
+LAUNCHER_SHA=b855065152574ec45dea709d36c792dd3c9ef7620ee8c8a076d99c2cee64788b  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
 GUI=${RECLAIMER_GUI:-}
 # give up on a stalled connection instead of hanging (the launcher waits for this when updating)
@@ -163,6 +163,14 @@ chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/workshop_helper.
   "$BASE/game/tools.py"
 note "ok"
 
+bold "This Mac"
+# fit.py is the one place that answers "how much Mac is this?"; the launcher's Setup reads the same script
+/usr/bin/python3 -I "$BASE/game/fit.py" || true
+if [ "$(/usr/bin/python3 -I "$BASE/game/fit.py" --get tier 2>/dev/null || true)" = constrained ]; then
+  note "Project Reclaimer recommends 16 GB of RAM. With less, the first Forge asset library build may not fit,"
+  note "and the game can sit on \"Building Asset Library\" for a long time. Everything else still works."
+fi
+
 bold "Project Reclaimer (latest release, checksum-verified)"
 # updater.py installs it as its own file and removes older ones; the game's own updater is off (see run.sh)
 RECLAIMER_HOME="$BASE" /usr/bin/python3 -I "$BASE/game/updater.py" game 2>>"$BASE/logs/launcher.log" |
@@ -176,6 +184,13 @@ WINE_BIN="$BASE/wine/Wine Staging.app/Contents/Resources/wine/bin"
 if [ ! -f "$BASE/prefix-wine/system.reg" ]; then
   # (mscoree/mshtml off: no Wine Mono/Gecko install dialogs; the game doesn't use them)
   WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" "$WINE_BIN/wine" wineboot -i >/dev/null 2>&1 || true
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
+fi
+# controllers come to the game from SDL. For PlayStation pads Wine otherwise drops SDL's gamepad for a raw PS device
+# ("hidraw"), which the game can't use: "no gamepad detected" (#17). Xbox and other pads come from SDL either way.
+if ! grep -q '"DisableHidraw"=dword:00000001' "$BASE/prefix-wine/system.reg" 2>/dev/null; then
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wine" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
+    /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
   WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$WINE_BIN/wineserver" -w
 fi
 unlink_documents "$BASE/prefix-wine"

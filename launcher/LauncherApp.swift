@@ -346,6 +346,15 @@ func renderStates(to dir: URL) {
             s.offersODST = true
             s.phase = .ready
         }),
+        ("20-setup-8gb", false, { s in
+            s.checks = [Check(id: "mac", title: "Apple Silicon Mac, macOS 26", ok: true, detail: ""),
+                        Check(id: "memory", title: "Memory: 8 GB", ok: nil,
+                              detail: "Project Reclaimer recommends 16 GB. With 8 GB the game's first start can sit on \"Building Asset Library\" for a long time, and it may not finish. You can still install."),
+                        Check(id: "disk", title: "Free disk space: 61 GB", ok: true, detail: ""),
+                        Check(id: "tools", title: "Apple's developer tools", ok: true, detail: "")]
+            s.offersODST = true
+            s.phase = .ready
+        }),
         ("21-setup-blocked", false, { s in
             s.checks = [Check(id: "mac", title: "Apple Silicon Mac, macOS 26", ok: true, detail: ""),
                         Check(id: "disk", title: "Free disk space: 31 GB", ok: false,

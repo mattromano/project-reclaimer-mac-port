@@ -262,7 +262,6 @@ class ToolsTest(unittest.TestCase):
         self.write_log("Forge library: building it while the game starts.\n")
         state = self.startup(RECLAIMER_STALL_SECONDS="3600")
         self.assertEqual(state["state"], "building")  # (too soon to call it a stall)
-
     def test_startup_state_is_not_stalled_while_the_cache_is_writing(self):
         self.start_fake_game()
         time.sleep(1.2)  # (as above: the write has to be clearly after the start)

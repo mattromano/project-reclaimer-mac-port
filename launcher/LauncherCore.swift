@@ -207,6 +207,7 @@ func friendlyStep(_ heading: String) -> String? {
         ("Halo 3 game files", "Downloading Halo 3 from your Steam account"),
         ("Local network addresses", "Setting up the network (asks for your Mac password)"),
         ("Tuned graphics settings", "Choosing graphics settings for your Mac"),
+        ("This Mac", "Checking this Mac's memory"),
         ("Launcher app", "Adding Project Reclaimer to Applications"),
         ("Done", nil), ("Updated to", nil),
     ]
@@ -526,3 +527,15 @@ enum GCButton: Int, CaseIterable {
 /// controller service switches a PlayStation pad (DualSense, DualShock 4) to its full report, which isn't
 /// described in HID values, so the raw view showed no input at all (seen with a DualSense on 1.4.1).
 func readsThroughGameController(vendor: Int) -> Bool { vendor == 0x054C }
+
+// MARK: - memory
+
+/// RAM in whole GiB, as fit.py counts it (sysctl hw.memsize // 2**30).
+func memoryGigabytes(_ bytes: UInt64) -> Int { Int(bytes >> 30) }
+
+/// fit.py's "constrained" tier: less than the 16 GB Project Reclaimer recommends (unknown RAM isn't). Setup asks here
+/// rather than running fit.py, which isn't installed yet on a first run from the disk image.
+func isConstrainedMemory(_ bytes: UInt64) -> Bool {
+    let gb = memoryGigabytes(bytes)
+    return gb > 0 && gb < 16
+}

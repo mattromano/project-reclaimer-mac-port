@@ -326,6 +326,10 @@ check(elapsedText(132) == "2 min 12 s" && elapsedText(600) == "10 min", "minutes
 check(elapsedText(3720) == "1 h 2 min" && elapsedText(3600) == "1 h", "hours")
 check(elapsedText(-5) == "0 s", "never negative")
 
+// memory, as fit.py decides it: under 16 GB is constrained (and unknown RAM isn't)
+check(memoryGigabytes(8 * 1 << 30) == 8 && isConstrainedMemory(8 * 1 << 30), "8 GB Mac: constrained")
+check(!isConstrainedMemory(16 * 1 << 30) && !isConstrainedMemory(0), "16 GB and unknown: not constrained")
+check(friendlyStep("This Mac") == "Checking this Mac's memory", "installer's This Mac step")
 
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

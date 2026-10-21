@@ -82,6 +82,13 @@ final class SetupModel: ObservableObject {
         var list: [Check] = []
         let v = ProcessInfo.processInfo.operatingSystemVersion
         list.append(Check(id: "mac", title: "Apple Silicon Mac, macOS \(v.majorVersion)", ok: true, detail: ""))
+        // (only when it's below what Project Reclaimer recommends: an informational note, never a blocker)
+        let memory = ProcessInfo.processInfo.physicalMemory
+        if isConstrainedMemory(memory) {
+            let ram = memoryGigabytes(memory)
+            list.append(Check(id: "memory", title: "Memory: \(ram) GB", ok: nil,
+                              detail: "Project Reclaimer recommends 16 GB. With \(ram) GB the game's first start can sit on \"Building Asset Library\" for a long time, and it may not finish. You can still install."))
+        }
         let halo = home.appendingPathComponent(
             "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection/halo3/halo3.dll")
         let copying = ProcessInfo.processInfo.environment["RECLAIMER_MCC_FROM"] != nil  // (install.sh skips it too)

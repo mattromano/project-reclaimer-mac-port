@@ -48,5 +48,10 @@ campaign. It says nothing about the client's requirements.
 - Remaining levers are environmental, not architectural: more RAM, more free disk so macOS can grow swap, importing
   a completed cache from a machine with more memory (plausible but unverified), or pinning an older game release
   that predates the cross-map Forge library (server-version dependent).
+- **Measured 2026-10-21:** a different graphics stack outside this port — not Wine, not something this project ships
+  or recommends — completed the same build on the same 8 GB machine, with the same MCC files and the same client
+  version, in about ten minutes. That does not change the conclusion here: this port still cannot make Wine's build
+  fit. It does show the wall is the stack, not the machine, which is why the port's guidance for 8 GB users should
+  not read as "your Mac can't run this".
 - The port's honest role is to report the stall and help the player decide, which is what the startup-state work
   does. It cannot make the build fit.

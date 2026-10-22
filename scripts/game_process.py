@@ -9,13 +9,17 @@ decision, not an implementation detail: a marker would have to be carried by the
 
 The match pattern lives here too, with its RECLAIMER_GAME_PROCESS override, so every caller passes only the install:
 tools.py (the check and Force Quit), updater.py (skip the update while playing) and workshop_helper.py (stop
-watching once the game exits).
+watching once the game exits). The launcher window applies the same rule in Swift (launcher/LauncherCore.swift).
+
+A match this installation will not claim is reported on stderr, one line per pid: the callers otherwise see only
+"not running", and a working directory nobody expected would look like the game having stopped.
 
 Those three load this file by its exact path, because they run as `/usr/bin/python3 -I`, which leaves their own
 folder off sys.path (and adding it would let a file beside them stand in for a stdlib module; see presets.py).
 """
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 GAME_PROCESS = os.environ.get("RECLAIMER_GAME_PROCESS", r"project-reclaimer-v[0-9.]+\.exe game-client")  # (tests)
@@ -30,7 +34,17 @@ def pids(root):
     # matching command line an lsof -p argument, so a number there could name another process of this installation.
     found = [parts[0] for parts in map(str.split, out.splitlines()) if parts]
     root = Path(root).resolve()
-    return [pid for pid in found if _inside(_cwd(pid), root)]
+    mine = []
+    for pid in found:
+        cwd = _cwd(pid)
+        if _inside(cwd, root):
+            mine.append(pid)
+        elif cwd is not None:
+            # A match this installation will not claim: say so, because the caller only sees "not running" (the
+            # updater would skip no update and the window would call the game ended) while the real cause is a
+            # working directory nobody expected. Not for a process that exited between the match and the check.
+            print(f"game process outside the install: {pid} {cwd}", file=sys.stderr)
+    return mine
 
 
 def running(root):

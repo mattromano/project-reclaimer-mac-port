@@ -165,7 +165,7 @@ final class Launcher: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             MainActor.assumeIsolated { self.tick() }
         }
-        processRunning(gameProcess) { [self] running in
+        processRunning(gameProcess, in: home) { [self] running in
             if running {  // opened again while playing: just show mod downloads
                 playing = true
                 playedAt = .distantPast
@@ -440,8 +440,10 @@ final class Launcher: ObservableObject {
         playedAt = Date()
         gameGoneSince = nil
         windowless = WindowlessGame()
+        // From the install's game folder: launch.sh starts the Workshop helper in the background, and it must run
+        // where the game does, or the window can't tell it apart from another installation's helper.
         game = LineProcess("/bin/zsh", [gameDir.appendingPathComponent("launch.sh").path],
-                           onLine: { _ in }, onExit: { _ in })
+                           workingDirectory: gameDir, onLine: { _ in }, onExit: { _ in })
         if game == nil { gameStopped(early: true) }
     }
 
@@ -749,7 +751,7 @@ final class Launcher: ObservableObject {
         }
         guard ticks % 2 == 0 else { return }
         if playing { pollStartup() }  // (the command runs off the main thread; nothing is asked while nothing runs)
-        processRunning(#"workshop_helper\.py (watch|get)"#) { [self] in helperRunning = $0 }
+        processRunning(#"workshop_helper\.py (watch|get)"#, in: home) { [self] in helperRunning = $0 }
         // While a stop is in flight the game is meant to be disappearing, so its liveness is not judged here: the
         // windowless and process checks would fire a second stop, and gameEnded() would quit the app right after the
         // relaunch. Hands off until the stop ends (it always does: force-quit has its own timeouts).
@@ -763,7 +765,7 @@ final class Launcher: ObservableObject {
             windowless = WindowlessGame()
             return gameEnded(early: false)
         }
-        processRunning(gameProcess) { [self] gameUp in
+        processRunning(gameProcess, in: home) { [self] gameUp in
             // (checked again: a Try Again or Force Quit may have started while the check ran)
             guard mayWatchForGameGone(playing: playing, stopping: stopping) else { return }
             if game?.isRunning == true || gameUp {

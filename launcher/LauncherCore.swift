@@ -526,6 +526,33 @@ func elapsedText(_ seconds: TimeInterval) -> String {
     return s % 3600 == 0 ? "\(s / 3600) h" : "\(s / 3600) h \(s % 3600 / 60) min"
 }
 
+// MARK: - this installation's processes
+
+/// Whether a path is inside this installation (`root`), compared by whole path components: `/a/ProjectReclaimer2`
+/// is not inside `/a/ProjectReclaimer`. Symlinks are resolved on both sides, because `lsof` reports the real path
+/// (a test install under /var is /private/var) while the window holds the path it was given.
+func insideInstall(_ path: String, root: String) -> Bool {
+    let inside = realPath(path)
+    var base = realPath(root)
+    while base.count > 1 && base.hasSuffix("/") { base.removeLast() }
+    return inside == base || inside.hasPrefix(base + "/")
+}
+
+/// The path with symlinks resolved, for a path that doesn't exist yet too (an install being made): Foundation's
+/// resolvingSymlinksInPath leaves such a path alone, so the deepest part that does exist is resolved and the rest
+/// appended, as `realpath` would with the missing tail.
+func realPath(_ path: String) -> String {
+    var existing = URL(fileURLWithPath: path).standardizedFileURL
+    var missing: [String] = []
+    while existing.path != "/" && !FileManager.default.fileExists(atPath: existing.path) {
+        missing.insert(existing.lastPathComponent, at: 0)
+        existing = existing.deletingLastPathComponent()
+    }
+    var resolved = existing.resolvingSymlinksInPath().path
+    for part in missing { resolved = (resolved as NSString).appendingPathComponent(part) }
+    return resolved
+}
+
 // MARK: - trying again after a stall
 
 /// Whether the window may stop the game now. While a stop is already in flight it may not: a second Try Again or

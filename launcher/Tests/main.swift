@@ -417,5 +417,20 @@ for (ramGB, expected) in [(8, Tier.constrained), (16, Tier.standard)] {
 }
 check(friendlyStep("This Mac") == "Checking this Mac's memory", "installer's This Mac step")
 
+// which running processes are this installation's: the working directory decides, by whole path components
+check(insideInstall("/Users/p/Games/ProjectReclaimer/game", root: "/Users/p/Games/ProjectReclaimer"),
+      "the game folder is inside")
+check(insideInstall("/Users/p/Games/ProjectReclaimer/game/versions", root: "/Users/p/Games/ProjectReclaimer"),
+      "an older release's folder is inside")
+check(insideInstall("/Users/p/Games/ProjectReclaimer", root: "/Users/p/Games/ProjectReclaimer/"),
+      "the install itself, with a trailing slash on the root")
+check(!insideInstall("/Users/p/Games/ProjectReclaimer2/game", root: "/Users/p/Games/ProjectReclaimer"),
+      "a sibling whose name starts the same is not inside")
+check(!insideInstall("/Users/p/Games/ProjectReclaimer", root: "/Users/p/Games/ProjectReclaimer/game"),
+      "the install is not inside its own game folder")
+check(!insideInstall("/", root: "/Users/p/Games/ProjectReclaimer"), "root is not inside an install")
+check(insideInstall("/private/var/folders/x/PR/game", root: "/var/folders/x/PR"),
+      "lsof's real path matches the path the window was given")
+
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

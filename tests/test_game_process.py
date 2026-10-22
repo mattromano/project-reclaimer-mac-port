@@ -2,7 +2,9 @@
 
 Run: /usr/bin/python3 -I -m unittest discover -s tests
 """
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -55,6 +57,33 @@ class GameProcessTest(unittest.TestCase):
         time.sleep(0.2)
         self.assertEqual(gp.pids(self.home), [str(mine.pid)])
         self.assertTrue(gp.running(self.home))
+
+    def test_a_match_outside_the_installation_says_so(self):
+        # a working directory nobody expected must not read as "the game is stopped": one line per rejected pid
+        gp = self.load()
+        theirs = self.process("project-reclaimer-v9.9.99.exe game-client", folder=self.tmp)
+        time.sleep(0.2)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(gp.pids(self.home), [])
+        self.assertIn(f"game process outside the install: {theirs.pid} {self.tmp.resolve()}", said.getvalue())
+        self.assertEqual(len(said.getvalue().splitlines()), 1, said.getvalue())
+
+    def test_nothing_is_said_when_no_process_matched(self):
+        gp = self.load()
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertEqual(gp.pids(self.home), [])
+        self.assertEqual(said.getvalue(), "")
+
+    def test_nothing_is_said_when_the_match_is_this_installations(self):
+        gp = self.load()
+        self.process("project-reclaimer-v9.9.99.exe game-client", folder=self.home / "game")
+        time.sleep(0.2)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            self.assertTrue(gp.running(self.home))
+        self.assertEqual(said.getvalue(), "")
 
     def test_only_the_first_field_of_a_pgrep_line_is_read_as_a_pid(self):
         # pgrep prints "<pid>" here and "<pid> <command line>" where it reports the command line. Read as one word

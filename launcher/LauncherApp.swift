@@ -43,10 +43,11 @@ final class LineProcess {
     private var buffer = Data()
     var isRunning: Bool { process.isRunning }
 
-    init?(_ executable: String, _ arguments: [String],
+    init?(_ executable: String, _ arguments: [String], workingDirectory: URL? = nil,
           onLine: @escaping @MainActor (String) -> Void, onExit: @escaping @MainActor (Int32) -> Void) {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.currentDirectoryURL = workingDirectory
         var env = ProcessInfo.processInfo.environment
         env["RECLAIMER_HOME"] = home.path
         // updates rebuild the app the player opened, wherever it is; never the read-only disk image's copy
@@ -98,8 +99,11 @@ final class LineProcess {
 
 func python(_ script: String, _ args: [String], onLine: @escaping @MainActor (String) -> Void,
             onExit: @escaping @MainActor (Int32) -> Void) -> LineProcess? {
+    // From the install's game folder, like the game itself. The window decides which running processes belong to
+    // this installation by their working directory (processRunning), and a helper left in the window's own cwd
+    // (launchd gives a GUI app "/") would look like some other install's.
     LineProcess("/usr/bin/python3", ["-I", gameDir.appendingPathComponent(script).path] + args,
-                onLine: onLine, onExit: onExit)
+                workingDirectory: gameDir, onLine: onLine, onExit: onExit)
 }
 
 /// Can the helper scripts run? Off the main thread (python's first start can take a few seconds).
@@ -140,19 +144,51 @@ func acceptXcodeLicense(_ done: @escaping @MainActor (Bool) -> Void) {
     }
 }
 
-/// Is any process matching this pattern running? Off the main thread: waiting on the main thread would run the
-/// main run loop and re-enter the window's timer.
-func processRunning(_ pattern: String, _ done: @escaping @MainActor (Bool) -> Void) {
+/// Is any process matching this pattern running, and belonging to this installation (`root`)? Off the main thread:
+/// waiting on the main thread would run the main run loop and re-enter the window's timer.
+///
+/// The pattern alone is system-wide: another checkout, another test run or another player's copy matches it too.
+/// What makes a match this installation's is where it runs from: the window starts the game from the install's game
+/// folder (launch.sh -> run.sh cds to game/, or game/versions/) and the helper scripts from the same folder, so a
+/// matching pid counts only when its working directory is inside the install. This is the rule `game_process.py`
+/// applies for the scripts; the install root comes from the caller so it is resolved in one place.
+func processRunning(_ pattern: String, in root: URL, _ done: @escaping @MainActor (Bool) -> Void) {
     DispatchQueue.global().async {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-a", "-f", pattern]  // -a: pgrep otherwise skips the caller's ancestors
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
         var found = false
-        if (try? p.run()) != nil { p.waitUntilExit(); found = p.terminationStatus == 0 }
+        for pid in matchingPids(pattern) {
+            guard let cwd = workingDirectory(of: pid) else { continue }  // (gone since the match, or not this user's)
+            if insideInstall(cwd, root: root.path) { found = true; break }
+        }
         DispatchQueue.main.async { MainActor.assumeIsolated { done(found) } }
     }
+}
+
+/// The pids pgrep matched, in order. `-a` is macOS's "include the caller's ancestors" (pgrep leaves them out by
+/// default), not the command line: each line it prints here is one pid, and only the first field is read as one.
+func matchingPids(_ pattern: String) -> [String] {
+    let p = Process(), out = Pipe()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    p.arguments = ["-a", "-f", pattern]
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return [] }
+    let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    p.waitUntilExit()
+    return text.split(whereSeparator: \.isNewline)
+        .compactMap { $0.split(whereSeparator: \.isWhitespace).first.map(String.init) }
+}
+
+/// A process's working directory, or nil if it has exited meanwhile (or isn't this user's to inspect).
+func workingDirectory(of pid: String) -> String? {
+    let p = Process(), out = Pipe()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+    p.arguments = ["-a", "-p", pid, "-d", "cwd", "-Fn"]  // (prints "p<pid>", "fcwd", "n<path>")
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return nil }
+    let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    p.waitUntilExit()
+    return text.split(whereSeparator: \.isNewline).first { $0.hasPrefix("n") }.map { String($0.dropFirst()) }
 }
 
 // MARK: - app

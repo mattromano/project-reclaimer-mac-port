@@ -12,7 +12,8 @@
   force-quit         stop the game, Wine and wineserver for this install (frozen windows Force Quit can't close)
   mods               JSON: downloaded Workshop mods with titles and sizes, plus free disk space
   remove-mod <id>    delete one downloaded mod (not while the game runs)
-  report             zip the logs and versions (no Steam account name) to the Desktop: "ok <path>"
+  report             zip the logs, versions and what startup is doing (no Steam account name) to the Desktop:
+                     "ok <path>"
   reset-graphics     put back the tuned graphics settings
   forget-steam       forget the saved Steam account (the window then shows a QR code)
   games              JSON: Halo 3 and Halo 3: ODST (installed or not, size, folder), MCC's size and free disk space
@@ -330,6 +331,40 @@ def game_elapsed_seconds():
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
+STARTUP_MARKERS = {"build_started": b"Forge library: building it while the game starts",
+                   "menu_loaded": b'"map_loaded":true',
+                   "overlay_finished": b"Menu loading screen finished"}
+
+
+def startup_markers():
+    """Which startup markers the game has logged, anywhere in its log.
+
+    The log is scanned from the start, not from a tail window: the Forge build marker is logged near the top (byte
+    ~1,300 in the run that found this), so a 400 KB tail loses it once diagnostics fill the file — which made a
+    stalled build decay back to "starting". Chunks overlap by the longest marker so a match split across a boundary
+    still counts, and the scan stops once every marker is found.
+    """
+    found = {name: False for name in STARTUP_MARKERS}
+    overlap = b""
+    longest = max(len(needle) for needle in STARTUP_MARKERS.values())
+    try:
+        with open(LOGS / "client-wine.log", "rb") as log:
+            while True:
+                chunk = log.read(1 << 18)
+                if not chunk:
+                    break
+                window = overlap + chunk
+                for name, needle in STARTUP_MARKERS.items():
+                    if not found[name] and needle in window:
+                        found[name] = True
+                if all(found.values()):
+                    break
+                overlap = window[-(longest - 1):]
+    except OSError:
+        pass
+    return found
+
+
 def startup_state():
     """Whether startup is progressing, or a named stall, instead of waiting on a window that looks busy.
 
@@ -337,13 +372,7 @@ def startup_state():
     done. On a Mac too small to hold the build, it can write nothing for half an hour while the window spins, so the
     process being alive says nothing. This reads the cache's progress and the log's markers instead.
     """
-    try:
-        text = (LOGS / "client-wine.log").read_text(errors="replace")[-400000:]
-    except OSError:
-        text = ""
-    markers = {"build_started": "Forge library: building it while the game starts" in text,
-               "menu_loaded": '"map_loaded":true' in text,
-               "overlay_finished": "Menu loading screen finished" in text}
+    markers = startup_markers()
     elapsed = game_elapsed_seconds()
     cache, newest_write = cache_progress(forge_cache())
     started_at = None if elapsed is None else time.time() - elapsed
@@ -426,6 +455,28 @@ def remove_mod(wid):
     return "ok"
 
 
+def startup_evidence():
+    """What startup is doing, for the report: (readable lines, the startup state's own answer).
+
+    Startup-state is the one source of truth for this (the window reads the same answer), so the report carries it
+    rather than working anything out again. A probe that cannot answer must not stop the report being made, so the
+    lines say so and there is no data to attach.
+    """
+    try:
+        state = json.loads(startup_state())
+        cache, elapsed = state["forge_cache"], state["elapsed_s"]
+        when = f"{elapsed} s elapsed" if elapsed is not None else "not running"
+        writes = "cache written this run" if state["wrote_this_run"] else "no cache writes this run"
+        files = "file" if cache["files"] == 1 else "files"
+        last = (f"last write {cache['newest_age_s']} s ago" if cache["newest_age_s"] is not None
+                else "never written")
+        return [f"Startup: {state['state']}, {when} (stall threshold {state['stall_after_s']} s, {writes})",
+                "Startup detail: " + state["detail"],
+                f"Forge cache: {cache['bytes']} bytes in {cache['files']} {files}, {last}"], state
+    except Exception:  # (an unreadable startup state is not a reason to withhold the logs)
+        return ["Startup: unknown (the startup check failed)"], None
+
+
 def report():
     account = ""
     try:
@@ -439,7 +490,9 @@ def report():
         # (and names logged before a Forget Steam, and the Mac's user name in paths)
         text = re.sub(r"(-username|Signed in as|login with -username) \S+", r"\1 <steam account>", text)
         return text.replace(str(HOME), "~")
-    summary = [f"Project Reclaimer Mac Port report, {time.strftime('%Y-%m-%d %H:%M')}"]
+    startup_lines, startup = startup_evidence()
+    summary = [f"Project Reclaimer Mac Port report, {time.strftime('%Y-%m-%d %H:%M')}"] + startup_lines
+
     for label, cmd in [("macOS", ["sw_vers", "-productVersion"]), ("Mac", ["sysctl", "-n", "machdep.cpu.brand_string"]),
                        ("Memory", ["sysctl", "-n", "hw.memsize"])]:
         value = subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
@@ -456,6 +509,8 @@ def report():
     path = DESKTOP / f"Project Reclaimer report {time.strftime('%Y-%m-%d %H.%M')}.zip"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("summary.txt", scrub("\n".join(summary) + "\n"))
+        if startup is not None:  # (the same evidence the window shows, as data a maintainer can read)
+            z.writestr("startup-state.json", scrub(json.dumps(startup, indent=2)) + "\n")
         for log in sorted(LOGS.glob("*.log")):
             z.writestr(f"logs/{log.name}", scrub(log.read_text(errors="replace")[-2_000_000:]))
     return f"ok {path}"

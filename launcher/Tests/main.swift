@@ -238,9 +238,183 @@ check(readsThroughGameController(vendor: 0x054C) && !readsThroughGameController(
 check(knownLayout(vendor: 0x054C)?["back"] == "b\(GCButton.back.rawValue)"
       && knownLayout(vendor: 0x054C)?["y"] == "b\(GCButton.y.rawValue)", "PlayStation layout follows GCButton")
 
+// the machine-fit tier sets an expectation before Play; fit.py decides it (the window never measures RAM itself)
+let constrainedFit = #"{"arch": "arm64", "cores": 8, "free_disk_gb": 120, "macos": "14.0", "ram_gb": 8, "screen": [2560, 1440], "tier": "constrained"}"#
+let standardFit = #"{"arch": "arm64", "cores": 10, "free_disk_gb": 200, "macos": "14.0", "ram_gb": 32, "screen": [2560, 1440], "tier": "standard"}"#
+let boundaryFit = #"{"arch": "arm64", "cores": 8, "free_disk_gb": 120, "macos": "14.0", "ram_gb": 16, "screen": [2560, 1440], "tier": "standard"}"#
+check(machineTier(fitJSON: constrainedFit) == .constrained, "fit.py says 8 GB is constrained")
+check(machineTier(fitJSON: standardFit) == .standard, "fit.py says 32 GB is standard")
+check(machineTier(fitJSON: boundaryFit) == .standard, "fit.py says 16 GB is standard (the boundary)")
+check(machineTier(fitJSON: "") == nil, "no answer from fit.py: no tier")
+check(machineTier(fitJSON: "Traceback (most recent call last):") == nil, "a failing fit.py: no tier")
+check(machineTier(fitJSON: #"{"ram_gb": 8}"#) == nil, "fit.py without a tier: no tier")
+// a name this build doesn't know is standard: an unknown answer never invents a memory warning
+check(machineTier(fitJSON: #"{"tier": "something-new"}"#) == .standard, "an unrecognised tier is standard")
+check(machineTier(fitJSON: #"{"tier": 3}"#) == nil, "a tier that isn't a name: no tier")
+let expectation = startupExpectation(tier: .constrained)
+check(expectation != nil, "a constrained Mac is told before Play that the first start takes a long time")
+check(expectation?.lowercased().contains("memory") == true, "the expectation says why: \(expectation ?? "-")")
+check(startupExpectation(tier: .standard) == nil, "a standard Mac is told nothing")
+check(startupExpectation(tier: nil) == nil, "fit.py couldn't answer: no warning, not a guess")
+// what the window says about a starting game, from tools.py startup-state's one line (tested state by state)
+func startup(_ state: String, elapsed: Double? = nil, detail: String? = nil,
+             tier: Tier = .standard) -> StartupDisplay? {
+    let seconds = elapsed.map { String($0) } ?? "null"
+    var json = "{\"state\": \"\(state)\", \"elapsed_s\": \(seconds), \"stall_after_s\": 180"
+    if let detail { json += ", \"detail\": \"\(detail)\"" }
+    return startupDisplay(json: json + "}", tier: tier)
+}
+
+let sStarting = startup("starting", detail: "The game is starting.")
+check(sStarting?.look == .working && sStarting?.warning == false, "starting: working, not a warning")
+check(sStarting?.title == "Starting the game", "starting title: \(sStarting?.title ?? "-")")
+
+let sBuilding = startup("building", elapsed: 132)
+check(sBuilding?.look == .working, "building: still working")
+check(sBuilding?.title == "Building the Forge asset library", "building title: \(sBuilding?.title ?? "-")")
+check(sBuilding?.detail.contains("2 min 12 s") == true, "building says how long: \(sBuilding?.detail ?? "-")")
+check(sBuilding?.detail.contains("first start takes a while") == true, "building sets the expectation")
+check(sBuilding?.actions.isEmpty == true, "building offers no recovery actions")
+
+// a long build is still a build: only the command calls a stall (it has the cache and the start time)
+check(startup("building", elapsed: 9000)?.warning == false, "building for a long time is not the window's call")
+
+let sReady = startup("ready", detail: "The game is up.")
+check(sReady?.look == .done && sReady?.warning == false, "ready: done, not a warning")
+check(sReady?.title == "Game ready" && sReady?.detail == "The game is up.", "ready: the game is up")
+
+// a constrained Mac: the stall names memory as the likely cause, in plain words
+let sStalled = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing",
+                       tier: .constrained)
+check(sStalled?.look == .warning && sStalled?.warning == true, "stalled: a warning")
+check(sStalled?.title == "Startup stopped progressing", "stalled says what happened: \(sStalled?.title ?? "-")")
+check(sStalled?.detail.lowercased().contains("memory") == true,
+      "stalled names memory as the likely cause: \(sStalled?.detail ?? "-")")
+check(sStalled?.advice?.lowercased().contains("other apps") == true,
+      "stalled says to quit other apps: \(sStalled?.advice ?? "-")")
+check(sStalled?.advice?.lowercased().contains("try again") == true,
+      "stalled says to try again: \(sStalled?.advice ?? "-")")
+check(sStalled?.advice?.lowercased().contains("force-quit") == true,
+      "stalled points at force-quit: \(sStalled?.advice ?? "-")")
+for jargon in ["cache", "threshold", "wrote_this_run", "process"] {
+    check(sStalled?.advice?.lowercased().contains(jargon) != true, "stalled advice has no jargon: \(jargon)")
+}
+check(sStalled?.look != .done, "a stall never claims the game is ready")
+
+// a stall leaves both ways out in place: try again (Play, once the build is stopped) and force-quit
+check(sStalled?.actions == [.tryAgain, .forceQuit], "stalled offers both actions: \(sStalled?.actions ?? [])")
+check(sStalled?.actions.map(\.title) == ["Try Again", "Force Quit"], "stalled names both buttons plainly")
+
+// a standard Mac (or one fit.py couldn't answer for) is told nothing about memory: user story 6
+let sStalledStandard = startup("stalled", detail: "Startup stopped progressing: the Forge asset library has written nothing")
+check(sStalledStandard?.look == .warning, "a standard Mac's stall is still a warning")
+check(sStalledStandard?.title == sStalled?.title, "the stall is named the same way on every Mac")
+check(sStalledStandard?.detail.lowercased().contains("memory") != true
+      && sStalledStandard?.advice?.lowercased().contains("memory") != true,
+      "a standard Mac is told nothing about memory: \(sStalledStandard?.detail ?? "-")")
+check(sStalledStandard?.detail.lowercased().contains("progress") == true,
+      "the neutral stall still says startup stopped progressing")
+check(sStalledStandard?.actions == [.tryAgain, .forceQuit], "the neutral stall still offers both actions")
+check(sStalledStandard?.advice?.lowercased().contains("try again") == true
+      && sStalledStandard?.advice?.lowercased().contains("force-quit") == true,
+      "the neutral stall names both ways out: \(sStalledStandard?.advice ?? "-")")
+// no tier at all (fit.py never answered): still neutral, never a guess
+check(startupDisplay(json: #"{"state": "stalled", "elapsed_s": 200}"#)?.detail.lowercased().contains("memory") != true,
+      "no tier: a neutral stall, not a memory claim")
+
+// the cache is still being written: the window keeps saying building, and offers no recovery
+let sWriting = startupDisplay(json: #"{"state": "building", "elapsed_s": 132, "stall_after_s": 0, "wrote_this_run": true, "detail": "Building the Forge asset library."}"#)
+check(sWriting?.look == .working && sWriting?.warning == false, "still writing: building, not a warning")
+check(sWriting?.actions.isEmpty == true, "still writing: nothing to recover from")
+check(sWriting?.advice == nil, "still writing: no advice")
+check(sWriting?.detail.lowercased().contains("memory") == false, "still writing: no memory warning")
+
+// a cache left by an earlier run: the command calls the stall, and the window passes that on rather than second-guessing
+let sLeftover = startupDisplay(json: #"{"state": "stalled", "elapsed_s": 200, "stall_after_s": 180, "wrote_this_run": false}"#)
+check(sLeftover?.warning == true, "a leftover cache does not hide the stall")
+check(sLeftover?.actions.contains(.forceQuit) == true, "force quit stays offered while stalled")
+check(sLeftover?.actions.contains(.tryAgain) == true, "trying again stays offered while stalled")
+
+// Try Again stops the game first: only a stop that worked may be followed by a second start
+check(tryAgainStep(forceQuitExit: 0, said: "ok") == .restart, "a game that stopped is started again")
+let failedStop = tryAgainStep(forceQuitExit: 1,
+                              said: "error: The game didn't stop. Restart your Mac (Apple menu > Restart) to close it.")
+check(failedStop != .restart, "a game that didn't stop is not started again")
+if case .failed(let why) = failedStop {
+    check(why.contains("didn't stop") && why.contains("Restart your Mac"),
+          "the player is told why, in the tool's own words: \(why)")
+    check(!why.hasPrefix("error: "), "the error line's prefix is not passed on: \(why)")
+} else {
+    check(false, "a failed force-quit is a failed Try Again")
+}
+if case .failed(let why) = tryAgainStep(forceQuitExit: 1, said: "") {
+    check(why.contains("didn't stop") && why.contains("Restart your Mac"),
+          "a force quit that said nothing still explains itself: \(why)")
+} else {
+    check(false, "a force-quit that failed without a line is still a failure")
+}
+
+let sStopped = startup("stopped", detail: "The game isn't running.")
+check(sStopped?.look == .stopped && sStopped?.warning == false, "stopped: not a warning")
+check(sStopped?.title == "Game stopped" && sStopped?.detail == "The game isn't running.", "stopped: the game isn't running")
+
+// `ready` is the game's own completion marker, and it is final: the log grows past the 400 KB the command reads, its
+// marker falls out of it, and a later poll would say "starting" again. Once ready is seen, it stays (and asking stops).
+check(sReady?.settled == true, "ready settles startup")
+check(sBuilding?.settled == false && sStalled?.settled == false, "only ready settles startup")
+check(sStopped?.settled == false, "a stopped game is not a settled start")
+
+// while a stop is in flight the stall row offers nothing to press: two clicks would run two stops, and two games
+let sStopping = sStalled?.whileStopping
+check(sStopping?.actions.isEmpty == true, "a stop in flight offers no actions: \(sStopping?.actions ?? [])")
+check(sStopping?.look == .working, "a stop in flight is working, not a warning")
+check(sStopping?.title == "Stopping the game", "a stop in flight says what it is doing: \(sStopping?.title ?? "-")")
+check(mayStop(stopping: false) && !mayStop(stopping: true), "a second stop cannot start over a stop in flight")
+check(mayWatchForGameGone(playing: true, stopping: false), "a running game is watched")
+check(!mayWatchForGameGone(playing: true, stopping: true),
+      "while stopping, the game going away is expected: never judged gone")
+check(!mayWatchForGameGone(playing: false, stopping: false), "nothing is watched when nothing plays")
+
+// the note before Play is for the first start: once the Forge library exists there is no long build to expect
+let noCacheAnswer = #"{"state": "stopped", "elapsed_s": null, "stall_after_s": 180, "wrote_this_run": false, "forge_cache": {"bytes": 0, "files": 0, "newest_age_s": null}}"#
+let cacheAnswer = #"{"state": "stopped", "elapsed_s": null, "stall_after_s": 180, "wrote_this_run": false, "forge_cache": {"bytes": 8417280, "files": 96, "newest_age_s": 90000}}"#
+check(forgeCacheBuilt(stateJSON: noCacheAnswer) == false, "no cache yet: the first build is still to come")
+check(forgeCacheBuilt(stateJSON: cacheAnswer) == true, "a written cache: the library exists")
+check(forgeCacheBuilt(stateJSON: "not json") == nil, "unreadable: no answer about the cache")
+check(forgeCacheBuilt(stateJSON: #"{"state": "building"}"#) == nil, "no cache facts: no answer")
+check(startupExpectation(tier: .constrained, cacheBuilt: false) != nil, "a constrained Mac's first start is named")
+check(startupExpectation(tier: .constrained, cacheBuilt: true) == nil, "the library exists: no note on every launch")
+check(startupExpectation(tier: .constrained, cacheBuilt: nil) != nil,
+      "no answer about the cache keeps the note rather than guessing")
+check(startupExpectation(tier: .standard, cacheBuilt: false) == nil, "a standard Mac is still told nothing")
+
+// no detail from the command: the window still has a plain line to show
+check(startup("ready")?.detail == "The game is up.", "ready without a detail line")
+check(startup("building")?.detail == "Building. The first start takes a while.", "building without an elapsed time")
+check(startup("building", elapsed: 0)?.detail.contains("0 s") == true, "building at zero seconds")
+
+// unreadable or failing: no verdict at all, so the window keeps exactly the behaviour it had before
+check(startupDisplay(json: "") == nil, "no answer: no verdict")
+check(startupDisplay(json: "error: Permission denied") == nil, "a failure line: no verdict")
+check(startupDisplay(json: "not json at all") == nil, "garbage: no verdict")
+check(startupDisplay(json: "{\"state\": \"ready\"") == nil, "truncated json: no verdict")
+check(startupDisplay(json: #"{"state": "warming-up"}"#) == nil, "a state the window doesn't know: no verdict")
+
+// how long startup has been going, said plainly
+check(elapsedText(0) == "0 s" && elapsedText(45) == "45 s", "seconds")
+check(elapsedText(132) == "2 min 12 s" && elapsedText(600) == "10 min", "minutes")
+check(elapsedText(3720) == "1 h 2 min" && elapsedText(3600) == "1 h", "hours")
+check(elapsedText(-5) == "0 s", "never negative")
+
 // memory, as fit.py decides it: under 16 GB is constrained (and unknown RAM isn't)
 check(memoryGigabytes(8 * 1 << 30) == 8 && isConstrainedMemory(8 * 1 << 30), "8 GB Mac: constrained")
 check(!isConstrainedMemory(16 * 1 << 30) && !isConstrainedMemory(0), "16 GB and unknown: not constrained")
+// Setup counts RAM itself and fit.py decides the tier after install: they can't share a source, so pin both to the
+// same boundary. fit.py's own answer for these numbers is pinned in tests/test_fit.py.
+for (ramGB, expected) in [(8, Tier.constrained), (16, Tier.standard)] {
+    check(isConstrainedMemory(UInt64(ramGB) << 30) == (expected == .constrained),
+          "Setup's memory check agrees with fit.py's tier at \(ramGB) GB")
+}
 check(friendlyStep("This Mac") == "Checking this Mac's memory", "installer's This Mac step")
 
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")

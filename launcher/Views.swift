@@ -40,6 +40,56 @@ struct StepRow: View {
     }
 }
 
+/// What startup is doing while a game starts: a title, a plain line, and how to draw it (spinner, tick, or a warning).
+/// When startup has stopped progressing it also carries the advice and the actions that help: trying again, or
+/// force-quitting a build that will not finish.
+struct StartupRow: View {
+    let display: StartupDisplay
+    var act: (StartupAction) -> Void = { _ in }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            glyph.frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(display.title).font(.headline)
+                Text(display.detail).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let advice = display.advice {
+                    Text(advice).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !display.actions.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(display.actions, id: \.self) { actionButton($0) }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12)
+            .fill(display.warning ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.08)))
+    }
+
+    @ViewBuilder private func actionButton(_ action: StartupAction) -> some View {
+        switch action {
+        // (trying again is Play again, so it stays the primary action; force-quit is the way out that always works)
+        case .tryAgain: Button(action.title) { act(action) }.buttonStyle(.borderedProminent).tint(accent)
+        case .forceQuit: Button(action.title) { act(action) }.buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder private var glyph: some View {
+        switch display.look {
+        case .working: ProgressView().controlSize(.small).frame(width: 22, height: 22)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(accent).font(.title3)
+        case .warning: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.title3)
+        case .stopped: Image(systemName: "stop.circle.fill").foregroundStyle(.secondary).font(.title3)
+        }
+    }
+}
+
 struct QRView: View {
     let grid: QRGrid
     var body: some View {
@@ -254,6 +304,15 @@ struct ContentView: View {
 
             if let j = m.joinTrouble { JoinTroubleCard(m: m, j: j) }
 
+            if let s = m.startupRow {
+                StartupRow(display: s) { action in
+                    switch action {
+                    case .tryAgain: m.tryAgainAfterStall()
+                    case .forceQuit: m.startForceQuit()
+                    }
+                }
+            }
+
             if m.playing {
                 Label {
                     // (one literal: SwiftUI only applies the **bold** markup to a string literal)
@@ -296,6 +355,19 @@ struct ContentView: View {
             if let n = m.notice {
                 Label(n, systemImage: "info.circle")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            // fit.py says this Mac is below the recommended memory: set the first start's expectation, without
+            // touching the Play button (the warning never gates playing).
+            if !m.playing, let note = m.memoryNotice {
+                Label {
+                    Text(note).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } icon: {
+                    Image(systemName: "memorychip").foregroundStyle(.orange)
+                }
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
             }
 
             Button(action: installing ? { m.showInstallGames = true } : m.play) {

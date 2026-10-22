@@ -67,7 +67,12 @@ def machine(home=None):
 
 def tier(m):
     """Constrained below the recommended RAM; standard otherwise. Unknown RAM stays standard:
-    a probe that fails should not quietly downgrade a machine."""
+    a probe that fails should not quietly downgrade a machine.
+
+    One of the two places that encode "under 16 GB": Setup's isConstrainedMemory() in launcher/LauncherCore.swift
+    counts RAM itself because fit.py isn't installed on a first run. They can't share a source, so keep the boundary
+    the same in both (tests/test_fit.py and launcher/Tests pin it at 8 GB constrained, 16 GB not).
+    """
     ram = m.get("ram_gb", 0)
     return "constrained" if 0 < ram < RECOMMENDED_RAM_GB else "standard"
 

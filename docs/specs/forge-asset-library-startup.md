@@ -12,10 +12,10 @@ or its logs says why, or what would help.
 
 While a game is starting, the launcher reports what startup is doing instead of showing an undifferentiated
 spinner. It tells **building** from **stalled** by watching whether the Forge asset library is being written,
-and when the build stops progressing it says so in plain words, names the likely cause — the build needs more
-memory than this Mac has free — and offers the two actions that help: quit other apps and try again, or
-force-quit a build that will not finish. On a constrained Mac the window also sets that expectation before
-Play.
+and when the build stops progressing it says so in plain words and offers the two actions that help: quit other
+apps and try again, or force-quit a build that will not finish. On a constrained Mac it also names the likely
+cause — the build needs more memory than this Mac has free — and sets that expectation before Play. On a standard
+Mac the stall is named but memory is never mentioned: that player is not told about a shortage they do not have.
 
 The port does not change the game's behaviour. It cannot make the game skip the library; it can only report
 honestly and help the player decide.
@@ -60,12 +60,39 @@ progress.
 without a rebuild. The evidence behind 180: the first build takes about a minute on the hardware the port was
 tuned for.
 
-**A pure display mapping in the launcher core.** A function maps `(state, elapsed, threshold)` to what the window
-shows: a title, a detail line, and whether it is a warning. No I/O, no dates, no process access — so it is
-testable on its own.
+**A pure display mapping in the launcher core.** A function maps `(state, detail, elapsed, tier)` to what the
+window shows: a title, a detail line, the actions it offers, and whether it is a warning. No I/O, no dates, no
+process access — so it is testable on its own.
+
+`state` and `detail` are the command's own verdict, passed through rather than recomputed. `elapsed` is time
+since the game started, which is when the build starts, so the building state can say how long it has been
+building. `tier` is the machine-fit tier, decoded once from fit.py's JSON; it decides whether a stall may mention
+memory at all, and an unrecognised tier counts as standard.
+
+**The stall threshold is judged in one place.** The threshold stays in the startup-state command, which is the
+single judge of whether a stall has happened: only it knows the cache and when this run started. The display
+mapping is not given the threshold and must not re-time a stall from elapsed time. A long build is still a
+build; the window never promotes one to a stall itself.
 
 **Polling, not blocking.** While a game runs, the window polls the startup state on a timer off the main thread
 and cancels on exit. Play must never be blocked by a stall; Force Quit stays enabled throughout.
+
+**Ready is final, and asking stops there.** `ready` comes from the game's own completion marker and is the end
+of the question: the window stops polling on it. The command reads a tail of the log, so a long session pushes
+the marker out of that tail and a later poll would answer `starting` again for a game that is up; stopping at
+`ready` is what keeps readiness from decaying. It also means a two-hour session runs a handful of probes, not
+thousands — each one spawns Python and reads the log and the cache.
+
+**One stop at a time.** Try Again and Force Quit both run `force-quit`, which takes up to fifteen seconds. While
+it runs, the stall row offers neither action (a second click would run a second stop and a second `play()`, and
+two games would end up on one install), and the window judges no liveness: the game disappearing is what the
+stop is doing, so a windowless or gone-process check would fire a second stop and `gameEnded` would quit the app
+right after the relaunch. The flag clears when the stop finishes, whether it worked or not.
+
+**The note before Play is for the first start.** It is shown until the Forge asset library exists: a Mac that
+has already built it has no long build to expect on every later launch. The window reads that from
+`startup-state`'s own `forge_cache` facts — one probe at startup, then each poll — rather than walking the cache
+itself, so the note and the stall verdict cannot disagree about what the cache holds.
 
 **Never claim ready without the game's own completion marker.** Absence of a stall is not readiness.
 
@@ -76,7 +103,9 @@ whether the window mentions memory at all. It never blocks Play or installation.
 current behaviour rather than showing a state it did not observe.
 
 **No changes to how the game is launched.** This is reporting only: no new launch flags, no changes to the
-launch scripts, no attempt to influence the game's cache.
+launch scripts, no attempt to influence the game's cache. "Reporting only" is about how the game is started, not
+about what the window may offer: the two recovery actions above (Try Again and Force Quit) stay, and they stop and
+restart the game through the force-quit command Tools already used.
 
 ## Testing Decisions
 

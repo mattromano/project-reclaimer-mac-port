@@ -306,6 +306,41 @@ func devTools(selected: Bool, pythonStatus: Int32?, pythonOutput: String) -> Dev
     return pythonOutput.contains("xcodebuild -license") || pythonOutput.contains("Xcode license") ? .license : .missing
 }
 
+// MARK: - machine fit
+
+/// The machine-fit tier: whether the window mentions memory at all. fit.py decides it (RAM is its business) and the
+/// window only repeats the answer. A name this build doesn't know counts as `.standard`, so an unknown tier never
+/// invents a memory warning.
+enum Tier: String, Equatable {
+    case constrained, standard
+
+    /// fit.py's name for a tier; anything else is standard.
+    init(name: String) { self = Tier(rawValue: name) ?? .standard }
+}
+
+/// fit.py's answer for this Mac, as far as the window needs it: the machine-fit tier, decoded once from its JSON.
+/// nil when fit.py couldn't be read or said nothing about the tier: no answer is not a verdict.
+func machineTier(fitJSON: String) -> Tier? {
+    guard let data = fitJSON.data(using: .utf8),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let name = object["tier"] as? String else { return nil }
+    return Tier(name: name)
+}
+
+/// What the window says before Play about the first start, if anything. A constrained Mac (below the 16 GB the game
+/// recommends) is told the first asset-library build takes a long time, and why; a standard Mac is told nothing.
+/// nil for a tier fit.py didn't give, so a failed probe never invents a warning.
+///
+/// `cacheBuilt` is `tools.py startup-state`'s `forge_cache` facts: the note is for the *first* start, so it goes once
+/// the library exists — a Mac that has built it has nothing long to expect on every later launch. nil (nobody asked
+/// yet, or the answer couldn't be read) keeps the note, the behaviour before this was known.
+func startupExpectation(tier: Tier?, cacheBuilt: Bool? = nil) -> String? {
+    guard tier == .constrained, cacheBuilt != true else { return nil }
+    return "This Mac has less memory than the 16 GB the game recommends, so its first start can take a long time: "
+        + "before the menu appears, the game builds its Forge asset library. That can take half an hour or more, and "
+        + "it can look stuck while it works. Quitting other apps before Play gives it more room."
+}
+
 // MARK: - a game left running without a window
 
 /// A window owned by one of this install's Wine processes.
@@ -368,6 +403,155 @@ func wineWindows(wineDir: URL) -> [WineWindow]? {
                                   onscreen: (window[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false))
     }
     return windows
+}
+
+// MARK: - what startup is doing
+
+/// `tools.py startup-state`'s answer. The command is the only thing that decides what startup is doing: this is
+/// just its JSON, so the window never infers progress from process liveness, log growth or CPU use.
+struct StartupState: Decodable, Equatable {
+    let state: String
+    let detail: String?
+    let elapsed_s: Double?
+}
+
+/// Whether the Forge asset library has been built before, from `tools.py startup-state`'s own `forge_cache` facts — the
+/// same command that judges a stall, so the window has one source of truth for the cache rather than walking it too.
+/// false: no file has been written yet (the first build is still to come); nil: the answer couldn't be read, so the
+/// window keeps its earlier behaviour instead of inventing a cached build or a missing one.
+func forgeCacheBuilt(stateJSON line: String) -> Bool? {
+    guard let data = line.data(using: .utf8),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let cache = object["forge_cache"] as? [String: Any] else { return nil }
+    let files = cache["files"] as? Int ?? 0
+    let bytes = cache["bytes"] as? Int ?? 0
+    return files > 0 || bytes > 0
+}
+
+/// Something the window offers when startup isn't progressing. The copy lives in the pure mapping, so a test can
+/// say what the window offers without launching a game; the view only draws the buttons.
+enum StartupAction: String, Equatable, Hashable {
+    case tryAgain, forceQuit
+
+    var title: String {
+        switch self {
+        case .tryAgain: return "Try Again"
+        case .forceQuit: return "Force Quit"
+        }
+    }
+}
+
+/// What the window says about a starting game: a title, a plain line of detail, how to draw it, and — when there is
+/// something to do about it — a second line of advice and the actions it names.
+struct StartupDisplay: Equatable {
+    enum Look: Equatable { case working, done, warning, stopped }
+    var title: String
+    var detail: String
+    var look: Look
+    var advice: String? = nil
+    var actions: [StartupAction] = []
+    var warning: Bool { look == .warning }
+
+    /// Startup is over: the game showed its own completion marker. Final, so it can never decay back to "Starting the
+    /// game", and polling stops on it (each poll reads the whole log, which keeps growing), which is also why there is
+    /// nothing to ask afterwards.
+    var settled: Bool { look == .done }
+
+    /// The same row with a stop in flight: its actions are taken away, so a second click can't run a second stop and
+    /// start a second game, and it says what is happening instead of the stall it is fixing.
+    var whileStopping: StartupDisplay {
+        StartupDisplay(title: "Stopping the game", detail: "Stopping the game now. This can take a few seconds.",
+                       look: .working)
+    }
+}
+
+/// The display for one line of `tools.py startup-state`. nil: the answer couldn't be read (or says a state this
+/// window doesn't know), so the window keeps exactly the behaviour it had before rather than inventing a verdict.
+func startupDisplay(json line: String, tier: Tier = .standard) -> StartupDisplay? {
+    guard let data = line.data(using: .utf8),
+          let answer = try? JSONDecoder().decode(StartupState.self, from: data) else { return nil }
+    return startupDisplay(state: answer.state, detail: answer.detail ?? "", elapsed: answer.elapsed_s, tier: tier)
+}
+
+/// The state vocabulary (starting, building, ready, stalled, stopped) as the window shows it. Pure: no dates, no
+/// processes, so the display decision can be tested without launching a game. A long build is still a build: only
+/// the command calls a stall, since only it knows the cache and when this run started. `elapsed` is time since the
+/// game started, which is when the build starts, so the building state can say how long it has been building.
+/// `tier` decides whether a stall may mention memory: fit.py's tier, not a guess of the window's.
+func startupDisplay(state: String, detail: String = "", elapsed: TimeInterval? = nil,
+                    tier: Tier = .standard) -> StartupDisplay? {
+    func words(_ fallback: String) -> String { detail.isEmpty ? fallback : detail }
+    switch state {
+    case "starting":
+        return StartupDisplay(title: "Starting the game", detail: words("The game is starting."), look: .working)
+    case "building":
+        let since = elapsed.map { " for \(elapsedText($0))" } ?? ""
+        return StartupDisplay(title: "Building the Forge asset library",
+                              detail: "Building\(since). The first start takes a while.", look: .working)
+    case "ready":
+        return StartupDisplay(title: "Game ready", detail: words("The game is up."), look: .done)
+    case "stalled":
+        // The command has already compared the cache with this run's start time, so the window repeats its verdict
+        // in plain words rather than re-checking anything. Both ways out stay offered: trying again restarts the
+        // build, force-quitting stops it — neither is taken away by a stall. Memory is named only on a constrained
+        // Mac: the tier decides whether the window mentions it at all, so a standard Mac is never told about a
+        // shortage it doesn't have.
+        guard tier == .constrained else {
+            return StartupDisplay(
+                title: "Startup stopped progressing",
+                detail: "The game stopped making progress while building its Forge asset library.",
+                look: .warning,
+                advice: "Try again. If it still doesn't finish, force-quit it.",
+                actions: [.tryAgain, .forceQuit])
+        }
+        return StartupDisplay(
+            title: "Startup stopped progressing",
+            detail: "The game stopped making progress while building its Forge asset library. The likely cause is "
+                + "not enough free memory: that build needs more than this Mac has available right now.",
+            look: .warning,
+            advice: "Quit other apps, then try again. If it still doesn't finish, force-quit it.",
+            actions: [.tryAgain, .forceQuit])
+    case "stopped":
+        return StartupDisplay(title: "Game stopped", detail: words("The game isn't running."), look: .stopped)
+    default:
+        return nil
+    }
+}
+
+/// "45 s", "2 min 12 s", "10 min", "1 h 2 min" for how long something has been going.
+func elapsedText(_ seconds: TimeInterval) -> String {
+    let s = max(0, Int(seconds.rounded(.down)))
+    if s < 60 { return "\(s) s" }
+    if s < 3600 { return s % 60 == 0 ? "\(s / 60) min" : "\(s / 60) min \(s % 60) s" }
+    return s % 3600 == 0 ? "\(s / 3600) h" : "\(s / 3600) h \(s % 3600 / 60) min"
+}
+
+// MARK: - trying again after a stall
+
+/// Whether the window may stop the game now. While a stop is already in flight it may not: a second Try Again or
+/// Force Quit would run a second stop and then a second start, and two games would end up running on one install.
+func mayStop(stopping: Bool) -> Bool { !stopping }
+
+/// Whether this tick may judge the game gone (its process finished, or its window went). While a stop is in flight
+/// the game is *meant* to be disappearing — Try Again's own force-quit is doing it — so watching for it would fire a
+/// second stop, and `gameEnded(false)` would quit the app right after the relaunch.
+func mayWatchForGameGone(playing: Bool, stopping: Bool) -> Bool { playing && !stopping }
+
+/// Try Again's first step is stopping this attempt, so `tools.py force-quit`'s answer decides whether a second start
+/// may happen. Starting over a game that wouldn't stop would put two on one install.
+enum TryAgainStep: Equatable {
+    case restart
+    case failed(String)  // what to tell the player instead of starting a second game
+}
+
+/// The step Try Again takes after force-quit: the game stopped (start it again), or it didn't (say why, launch nothing).
+func tryAgainStep(forceQuitExit status: Int32, said line: String) -> TryAgainStep {
+    let answer = line.trimmingCharacters(in: .whitespacesAndNewlines)
+    if answer.hasPrefix("error: ") { return .failed(String(answer.dropFirst(7))) }
+    guard status == 0 else {
+        return .failed("The game didn't stop, so it wasn't started again. Restart your Mac (Apple menu > Restart), then press Play.")
+    }
+    return .restart
 }
 
 // MARK: - controller axes
@@ -454,6 +638,10 @@ func memoryGigabytes(_ bytes: UInt64) -> Int { Int(bytes >> 30) }
 
 /// fit.py's "constrained" tier: less than the 16 GB Project Reclaimer recommends (unknown RAM isn't). Setup asks here
 /// rather than running fit.py, which isn't installed yet on a first run from the disk image.
+///
+/// This is one of the two places that encode "under 16 GB": the other is fit.py's `tier()`, which the window follows
+/// after install. They can't share a source (fit.py doesn't exist on a first run), so keep the boundary the same in
+/// both; tests/test_fit.py and launcher/Tests pin it at 8 GB constrained, 16 GB not.
 func isConstrainedMemory(_ bytes: UInt64) -> Bool {
     let gb = memoryGigabytes(bytes)
     return gb > 0 && gb < 16

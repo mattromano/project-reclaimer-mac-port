@@ -279,6 +279,14 @@ func renderStates(to dir: URL) {
                 ModStatus(id: "4", title: "Sanctuary", state: "failed", time: now - 3),
             ]
         }),
+        ("7b-startup-building", {
+            $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123"); $0.playing = true
+            $0.startup = startupDisplay(state: "building", elapsed: 132)
+        }),
+        ("7c-startup-stalled", {
+            $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123"); $0.playing = true
+            $0.startup = startupDisplay(state: "stalled", elapsed: 240, tier: .constrained)
+        }),
         ("9-game-closed", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")
             $0.gameError = "The game closed right after starting. Press Play to try again. If it keeps happening, "

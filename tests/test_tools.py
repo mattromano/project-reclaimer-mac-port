@@ -309,6 +309,16 @@ class ToolsTest(unittest.TestCase):
         self.write_log("Menu loading screen finished.\n")
         self.assertEqual(self.startup()["state"], "ready")
 
+    def test_startup_state_with_nothing_installed_reports_stopped(self):
+        # no prefix, no log, no cache (a first run, or an install that stopped partway): the probe must answer, not
+        # crash, and must not invent a state
+        shutil.rmtree(self.home / "prefix-wine")
+        shutil.rmtree(self.home / "logs")
+        state = self.startup()
+        self.assertEqual(state["state"], "stopped")
+        self.assertIsNone(state["elapsed_s"])
+        self.assertEqual(state["forge_cache"], {"bytes": 0, "files": 0, "newest_age_s": None})
+
     def test_startup_state_is_ready_once_the_loading_screen_finishes(self):
         self.start_fake_game()
         self.write_log("Menu loading screen finished.\n")
@@ -319,6 +329,17 @@ class ToolsTest(unittest.TestCase):
         self.write_log("Forge library: building it while the game starts.\n")
         self.assertEqual(self.startup()["state"], "building")
 
+    def test_the_build_marker_survives_a_log_that_grows_past_a_tail_window(self):
+        # the marker is logged near the top; diagnostics later fill the file, which is what a real stall looks like.
+        # Reading only the last 400 KB lost it, so a stalled build decayed back to "starting".
+        self.write_cache()  # (left over from an earlier run: nothing written this run)
+        time.sleep(1.2)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n" + ("diagnostic line\n" * 40000))
+        state = self.startup(RECLAIMER_STALL_SECONDS="0")
+        self.assertTrue(state["markers"]["build_started"])
+        self.assertEqual(state["state"], "stalled")
+
     def test_startup_state_names_a_stall_when_nothing_is_written_this_run(self):
         self.write_cache()  # (a leftover from an earlier run: nothing written since this start)
         time.sleep(1.2)  # (ps reports elapsed in whole seconds, so make the ordering unambiguous)
@@ -328,6 +349,14 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(state["state"], "stalled")
         self.assertFalse(state["wrote_this_run"])
         self.assertIn("Forge asset library", state["detail"])
+
+    def test_startup_state_is_not_stalled_before_the_threshold(self):
+        self.write_cache()  # (an older build's cache: nothing written this run)
+        time.sleep(1.2)  # (as above: the cache has to be clearly before this start)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        state = self.startup(RECLAIMER_STALL_SECONDS="3600")
+        self.assertEqual(state["state"], "building")  # (too soon to call it a stall)
 
     def test_startup_state_is_not_stalled_while_the_cache_is_writing(self):
         self.start_fake_game()
@@ -388,6 +417,65 @@ class ToolsTest(unittest.TestCase):
         self.assertNotIn("SecretName", text)
         self.assertNotIn("steam-account", " ".join(names))
 
+    def test_report_includes_the_startup_state_and_the_forge_cache(self):
+        # a stalled start: the build marker is logged, the cache was last written before this run, long enough ago
+        (self.home / "steam-account").write_text("SecretName\n")
+        self.write_cache(payload=b"x" * 4096)
+        time.sleep(1.2)  # (ps reports elapsed in whole seconds, so make the cache clearly older than the start)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        rc, out = self.run_tool("report", RECLAIMER_STALL_SECONDS="0")
+        self.assertEqual(rc, 0, out)
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            text = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist())
+        self.assertIn("Startup: stalled", text)
+        self.assertIn("stall threshold 0 s", text)
+        self.assertIn("Forge cache: 4096 bytes in 1 file", text)
+        self.assertIn("no cache writes this run", text)
+        self.assertNotIn("SecretName", text)  # (the report is made to be shared)
+
+    def test_report_carries_the_startup_state_as_data(self):
+        self.write_cache(payload=b"x" * 4096)
+        time.sleep(1.2)  # (as above: the cache is from an earlier run)
+        self.start_fake_game()
+        self.write_log("Forge library: building it while the game starts.\n")
+        rc, out = self.run_tool("report", RECLAIMER_STALL_SECONDS="0")
+        self.assertEqual(rc, 0, out)
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            startup = json.loads(z.read("startup-state.json"))
+        self.assertEqual(startup["state"], "stalled")
+        self.assertEqual(startup["stall_after_s"], 0)
+        self.assertGreaterEqual(startup["elapsed_s"], 0)
+        self.assertFalse(startup["wrote_this_run"])
+        self.assertEqual(startup["forge_cache"]["bytes"], 4096)
+        self.assertEqual(startup["forge_cache"]["files"], 1)
+        self.assertGreaterEqual(startup["forge_cache"]["newest_age_s"], 1)
+
+    def test_report_still_works_when_the_game_has_never_run(self):
+        # no game process, no Forge cache, no log: the report must still be made
+        rc, out = self.run_tool("report")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out[-1].startswith("ok "), out)
+        with zipfile.ZipFile(Path(out[-1][3:])) as z:
+            startup = json.loads(z.read("startup-state.json"))
+            summary = z.read("summary.txt").decode()
+        self.assertEqual(startup["state"], "stopped")
+        self.assertEqual(startup["elapsed_s"], None)
+        self.assertEqual(startup["forge_cache"], {"bytes": 0, "files": 0, "newest_age_s": None})
+        self.assertIn("Startup: stopped", summary)
+        self.assertIn("Forge cache: 0 bytes in 0 files, never written", summary)
+
+    def test_report_still_works_when_the_startup_check_fails(self):
+        t = self.load()
+        with mock.patch.object(t, "startup_state", side_effect=RuntimeError("the probe broke")):
+            result = t.report()
+        self.assertTrue(result.startswith("ok "), result)
+        with zipfile.ZipFile(Path(result[3:])) as z:
+            summary = z.read("summary.txt").decode()
+            names = z.namelist()
+        self.assertIn("Startup: unknown (the startup check failed)", summary)
+        self.assertNotIn("startup-state.json", names)  # (no invented verdict)
+        self.assertNotIn("the probe broke", summary)  # (an error's own words can name paths)
     def test_report_leaves_out_the_mac_user_name_and_logged_steam_names(self):
         (self.home / "logs" / "launcher.log").write_text(
             f"started (home {Path.home()}/Games/ProjectReclaimer)\nDepotDownloader -username OldName -remember-password\n")
@@ -416,12 +504,16 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(settings["mouse_sensitivity"], 3.0)  # only graphics change
 
     def test_repair_and_graphics_wait_for_the_game_to_quit(self):
+        # (spawned from the install's game folder so the fake counts as this installation's game either way)
         game = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
-                                 "project-reclaimer-v9.9.99.exe game-client"], cwd=self.home / "game")
+                                 "project-reclaimer-v9.9.99.exe game-client"],
+                                cwd=str(self.home / "game"))
         try:
-            tools = self.load()  # (in-process, so the free-space check can be stubbed as in the add-games tests)
-            with mock.patch.object(tools.helper(), "game_download", return_value="ok"), \
-                    mock.patch.object(tools.shutil, "disk_usage", return_value=mock.Mock(free=200 * 10**9)):
+            # in-process so free space can be stubbed: this machine has less than add-game needs, and the
+            # running-game refusal has to be what the commands hit first
+            tools = self.load()
+            with mock.patch.object(tools.shutil, "disk_usage", return_value=mock.Mock(free=200 * 10**9)), \
+                    mock.patch.object(tools.helper(), "game_download", return_value="ok"):
                 self.assertEqual(tools.repair(), "error: Quit the game first.")
                 self.assertEqual(tools.add_games(["odst"]), "error: Quit the game first.")
                 self.assertEqual(tools.remove_game("odst"), "error: Quit the game first.")
@@ -429,6 +521,7 @@ class ToolsTest(unittest.TestCase):
                 self.assertEqual(tools.reset_graphics(), "error: Quit the game first.")
         finally:
             game.kill()
+            game.wait()
 
     def fake_mcc(self, odst=True, halo3=True):
         mcc = self.home / "prefix-wine/drive_c/Program Files (x86)/Steam/steamapps/common/Halo The Master Chief Collection"

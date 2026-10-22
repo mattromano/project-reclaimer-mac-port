@@ -31,6 +31,13 @@ SMALL = dict(BIG, ram_gb=8)
 
 
 class TierTest(unittest.TestCase):
+    def test_json_answer_names_the_tier(self):
+        """The launcher reads this answer before Play: the tier has to be in it, and be one it knows."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(fit.main(["--json"]), 0)
+        self.assertIn(json.loads(out.getvalue())["tier"], ("constrained", "standard"))
+
     def test_recommended_ram_is_standard_and_8_gb_is_constrained(self):
         self.assertEqual(fit.tier(BIG), "standard")
         self.assertEqual(fit.tier(SMALL), "constrained")

@@ -11,7 +11,7 @@ and adds a **Project Reclaimer** app to your Mac.
 
 ## Requirements
 
-- Apple Silicon Mac (M1 or newer), macOS 14 Sonoma or newer, 16 GB RAM recommended
+- Apple Silicon Mac (M1 or newer), macOS 14 Sonoma or newer, 16 GB RAM recommended (on 8 GB, Forge's first build may never finish)
 - **Halo: The Master Chief Collection on Steam**, plus the Steam app on your phone (to sign in with a QR code)
 - ~45 GB free disk space (~54 GB with Halo 3: ODST)
 - Your Mac's admin password once
@@ -79,8 +79,8 @@ plain words and stays open for **Play again**.
 
 **Tools** (the gear button) handles the rest without Terminal: **Force Quit** a frozen game; under **Installed
 games**, add or remove Halo 3 and Halo 3: ODST, **Repair** either one's files against Steam, or open its folder; see **Mods and disk space** and remove mods, **Restore** the recommended graphics settings,
-**Switch** Steam accounts, **Make Report** (a zip of the logs on your Desktop, without your Steam account name), and
-**Uninstall**.
+**Switch** Steam accounts, **Make Report** (a zip of the logs and what startup is doing on your Desktop, without
+your Steam account name), and **Uninstall**.
 
 **A server on an older Project Reclaimer?** Releases come out about twice a day, and a server only a day behind can't
 be joined with the newest version. When a join fails, the window finds out which version the server runs (the game's

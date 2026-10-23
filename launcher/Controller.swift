@@ -289,6 +289,7 @@ final class ControllerManager: ObservableObject {
             selectedPlayerIndex = max(0, found.count - 1)
         }
         loadActiveMapping()
+        ensureActiveMappingsFile()
     }
 
     func selectionChanged() {
@@ -830,14 +831,21 @@ final class ControllerManager: ObservableObject {
         }
 
         // Refresh controller-mappings-active.txt so active mappings exist immediately for Wine
-        let activePath = baseDir.appendingPathComponent("controller-mappings-active.txt")
-        let bundledPath = baseDir.appendingPathComponent("game/gamecontrollerdb.txt")
-        var merged = (try? String(contentsOf: bundledPath, encoding: .utf8)) ?? ""
-        if let userText = try? String(contentsOf: userMappingsPath, encoding: .utf8) {
-            merged += (merged.isEmpty ? "" : "\n") + userText
-        }
-        if !merged.isEmpty {
-            try? merged.write(to: activePath, atomically: true, encoding: .utf8)
+        ensureActiveMappingsFile(force: true)
+    }
+
+    private func ensureActiveMappingsFile(force: Bool = false) {
+        let activePath = home.appendingPathComponent("controller-mappings-active.txt")
+        if force || !FileManager.default.fileExists(atPath: activePath.path) {
+            let bundledPath = home.appendingPathComponent("game/gamecontrollerdb.txt")
+            let userPath = home.appendingPathComponent("controller-mappings.txt")
+            var merged = (try? String(contentsOf: bundledPath, encoding: .utf8)) ?? ""
+            if let userText = try? String(contentsOf: userPath, encoding: .utf8) {
+                merged += (merged.isEmpty ? "" : "\n") + userText
+            }
+            if !merged.isEmpty {
+                try? merged.write(to: activePath, atomically: true, encoding: .utf8)
+            }
         }
     }
 }

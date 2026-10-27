@@ -55,13 +55,15 @@ DESKTOP = Path(os.environ.get("RECLAIMER_DESKTOP", HOME / "Desktop"))
 CLIENT_EXE = re.compile(r"^project-reclaimer-v[0-9.]+\.exe$")
 DAEMON = "local.projectreclaimer.loopback"
 DAEMON_PLIST = f"/Library/LaunchDaemons/{DAEMON}.plist"
-INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST))  # (tests point it elsewhere)
-DAEMON_DIR = os.environ.get("RECLAIMER_TEST_DAEMON_DIR", "/Library/Application Support/ProjectReclaimer")  # (tests)
+DRYRUN = os.environ.get("RECLAIMER_TOOLS_DRYRUN", "")  # "1": print admin commands; "cancel": as if cancelled
+# (tests point these elsewhere, only in dry-run mode: where root installs its task must not follow the environment)
+INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST) if DRYRUN else DAEMON_PLIST)
+DAEMON_DIR = (os.environ.get("RECLAIMER_TEST_DAEMON_DIR", "/Library/Application Support/ProjectReclaimer") if DRYRUN
+              else "/Library/Application Support/ProjectReclaimer")
 # what the root startup task must be: checked as root after copying it where only root can write (also in install.sh;
 # tests/test_tools.py checks all four match scripts/)
-LOOPBACK_SHA = "23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83"
+LOOPBACK_SHA = "3279e9f80d0e4f79d1d83ce7fe7c03c0c143ff6a88ee6fe51565e9125c5af436"
 LOOPBACK_PLIST_SHA = "27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd"
-DRYRUN = os.environ.get("RECLAIMER_TOOLS_DRYRUN", "")  # "1": print admin commands; "cancel": as if cancelled
 # How long the Forge asset library may write nothing before startup is called stalled. The first build takes about a
 # minute on the hardware it was tuned for; three minutes of no writes means it is not going to finish on its own.
 try:
@@ -79,7 +81,7 @@ def loopback_prefixes():
             return m.group(1).split()
     except OSError:
         pass
-    return ["127.0.0", "127.0.1", "127.0.2", "127.0.3", "127.3.1", "127.3.2", "127.3.3"]
+    return ["127.0.0", "127.0.1", "127.0.2", "127.3.1", "127.3.2"]
 
 
 # one sample address per range (127.0.0.1 is always there, so 127.0.0.2 stands for its range)
@@ -95,8 +97,14 @@ def as_admin(command, prompt):
     if DRYRUN:
         say("dry-run admin: " + command)
         return DRYRUN != "cancel"
-    return subprocess.run(["/usr/bin/osascript", "-e", admin_script(command, prompt)],
+    return subprocess.run(["/usr/bin/osascript", "-e", admin_script(root_command(command), prompt)],
                           capture_output=True).returncode == 0
+
+
+def root_command(command):
+    """The command with nothing from the player's environment: macOS's sudoers has no secure_path, and shasum is a Perl
+    script, so a PATH or PERL5OPT of theirs must not reach a root shell."""
+    return "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c " + quoted(command)
 
 
 def admin_script(command, prompt):
@@ -170,7 +178,7 @@ def net_fix():
         return "error: The network setup wasn't fixed (the password box was cancelled)."
     if DRYRUN:
         return "ok"
-    for _ in range(20):  # the task adds ~1,300 addresses; give it a moment
+    for _ in range(60):  # the task adds ~1,270 addresses, paced 50 a second
         if net_check() == "ok":
             return "ok"
         time.sleep(1)
@@ -710,15 +718,17 @@ def uninstall():
     stopped = force_quit()
     if stopped != "ok":
         return stopped  # (nothing deleted while the game still runs)
-    subprocess.run(["pkill", "-f", str(GAME / "workshop_helper.py")], capture_output=True)  # (only this install's)
-    shutil.rmtree(APP, ignore_errors=True)
-    shutil.rmtree(APP.with_name("Project Reclaimer Metal.app"), ignore_errors=True)  # (from early versions)
-    shutil.rmtree(BASE, ignore_errors=True)
+    # the root startup task first: once the install is gone, nothing in the app could remove it any more
     if not os.environ.get("RECLAIMER_KEEP_NETWORK") and INSTALLED_PLIST.exists():
         removed = as_admin(f"launchctl bootout system/{DAEMON} 2>/dev/null; rm -f {DAEMON_PLIST}; "
                            f"rm -rf {quoted(DAEMON_DIR)}", "Project Reclaimer is removing its network setting.")
         if not removed:
-            return "ok network-kept"  # (harmless: extra local addresses that nothing else uses)
+            return ("error: Nothing was removed: Project Reclaimer needs your password to remove its network "
+                    "setting first. Try again.")
+    subprocess.run(["pkill", "-f", str(GAME / "workshop_helper.py")], capture_output=True)  # (only this install's)
+    shutil.rmtree(APP, ignore_errors=True)
+    shutil.rmtree(APP.with_name("Project Reclaimer Metal.app"), ignore_errors=True)  # (from early versions)
+    shutil.rmtree(BASE, ignore_errors=True)
     return "ok"
 
 

@@ -35,7 +35,7 @@ DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownl
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
 # the root startup task (scripts/reclaimer-loopback.sh and its plist): checked as root after they're copied where only
 # root can write, so a file swapped in the meantime never runs at boot (also in tools.py; the tests check all match)
-LOOPBACK_SHA=23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83
+LOOPBACK_SHA=3279e9f80d0e4f79d1d83ce7fe7c03c0c143ff6a88ee6fe51565e9125c5af436
 LOOPBACK_PLIST_SHA=27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd
 LAUNCHER_SHA=10cba37f58f31797a0332499194870dcc3d961d6671c959357e9694305d41a2a  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
@@ -72,12 +72,15 @@ script_file() {  # copy a file from this repo (local checkout or GitHub) to $2
 }
 
 as_admin() {  # as_admin "<shell command>" "<why>": sudo in Terminal; macOS's password dialog when run by the launcher
+  # (with nothing from the player's environment: sudoers has no secure_path, and shasum is a Perl script)
+  local q="'"${1//\'/\'\\\'\'}"'"
+  local root="/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c $q"
   if [ -n "$UPDATE" ] || [ -n "$GUI" ]; then
-    local cmd=${1//\\/\\\\}; cmd=${cmd//\"/\\\"}
+    local cmd=${root//\\/\\\\}; cmd=${cmd//\"/\\\"}
     local why=${2:-Project Reclaimer is changing a system setting.}
     /usr/bin/osascript -e "do shell script \"$cmd\" with prompt \"$why\" with administrator privileges" >/dev/null
   else
-    sudo /bin/sh -c "$1" </dev/tty
+    sudo /bin/sh -c "$root" </dev/tty
   fi
 }
 
@@ -265,9 +268,10 @@ fi
 mkdir -p "$BASE/prefix-wine/$STEAM_REL/steamapps/workshop/content/$MCC_APP"
 
 bold "Local network addresses (needs your Mac password once)"
-note "Reclaimer talks to the game over 127.0.0-3.x / 127.3.1.x; macOS only enables 127.0.0.1."
+note "Reclaimer talks to the game over 127.0.0-2.x / 127.3.1-2.x; macOS only enables 127.0.0.1."
 note "This installs a small startup task (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist)."
-T=$(mktemp -d)
+# (staged in game/, which the sandboxed game can't write: root reads these files)
+T=$(mktemp -d "$BASE/game/.loopback.XXXXXX")
 script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
 script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
 LB_DIR="/Library/Application Support/ProjectReclaimer"

@@ -337,7 +337,7 @@ func renderStates(to dir: URL) {
         }),
         ("12-network-fix", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")
-            $0.network = .working("Fixing the network setup. macOS will ask for your Mac password.")
+            $0.network = .working("Adding the local network addresses the game needs…")
         }),
         ("13-crash", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")

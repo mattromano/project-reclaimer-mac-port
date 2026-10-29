@@ -2,7 +2,8 @@
 """The launcher window's Tools menu and automatic fixes, one command per action.
 
   net-check          "ok" or "missing": are the local network addresses Reclaimer needs on lo0?
-  net-fix            reinstall + restart the network startup task (one macOS password prompt)
+  net-fix            ask the network task to add them (no password), reinstalling it first if it isn't right (one
+                     macOS password prompt); nothing when the player turned the task off
   controller-check   "stuck" if macOS's game controller service is stuck (no app sees controllers until a restart)
   audio-check        where the Mac's sound goes, tab-separated: "ok <output>", "muted <output>", "virtual <output>"
                      or "headset <headphones> <output>" (the game keeps the output it starts with)
@@ -22,7 +23,7 @@
   repair-game <id>   re-check one installed game's files against Steam, the same way
   repair             the same for every installed game
   remove-game <id>   delete one game's files (MCC's shared files stay)
-  uninstall          remove the app, the install folder and the network startup task
+  uninstall          remove the app, the install folder and the network task
   server-version <host:port>   "<version> <name>" of the Project Reclaimer a server runs, or "unreachable"
   join <host:port>   join a server in the running game (hands it a join link, as a link in a browser would)
 
@@ -36,6 +37,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -55,13 +57,19 @@ DESKTOP = Path(os.environ.get("RECLAIMER_DESKTOP", HOME / "Desktop"))
 CLIENT_EXE = re.compile(r"^project-reclaimer-v[0-9.]+\.exe$")
 DAEMON = "local.projectreclaimer.loopback"
 DAEMON_PLIST = f"/Library/LaunchDaemons/{DAEMON}.plist"
-INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST))  # (tests point it elsewhere)
-DAEMON_DIR = os.environ.get("RECLAIMER_TEST_DAEMON_DIR", "/Library/Application Support/ProjectReclaimer")  # (tests)
-# what the root startup task must be: checked as root after copying it where only root can write (also in install.sh;
-# tests/test_tools.py checks all four match scripts/)
-LOOPBACK_SHA = "23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83"
-LOOPBACK_PLIST_SHA = "27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd"
 DRYRUN = os.environ.get("RECLAIMER_TOOLS_DRYRUN", "")  # "1": print admin commands; "cancel": as if cancelled
+# (tests point these elsewhere, only in dry-run mode: where root installs its task must not follow the environment)
+INSTALLED_PLIST = Path(os.environ.get("RECLAIMER_TEST_DAEMON_PLIST", DAEMON_PLIST) if DRYRUN else DAEMON_PLIST)
+DAEMON_DIR = (os.environ.get("RECLAIMER_TEST_DAEMON_DIR", "/Library/Application Support/ProjectReclaimer") if DRYRUN
+              else "/Library/Application Support/ProjectReclaimer")
+# what the root network task must be: checked as root after copying it where only root can write (also in install.sh;
+# tests/test_tools.py checks all four match scripts/)
+LOOPBACK_SHA = "8cef5d0ba5578169376e009259a2e6d8b5c3bce18d423e07515f7723bbca1eca"
+LOOPBACK_PLIST_SHA = "2f88cf323d268575862f8e3271b6d44f859d9697a60e6f83c26a12cc481892c0"
+# launchd starts the task when this folder changes. It is the player's (mode 700) inside root's folder, so neither the
+# sandboxed game nor anyone else can ask; root never opens it. The task writes how its last run went to STATUS.
+REQUEST_DIR = Path(DAEMON_DIR) / "request"
+STATUS = Path(DAEMON_DIR) / "loopback.status"
 # How long the Forge asset library may write nothing before startup is called stalled. The first build takes about a
 # minute on the hardware it was tuned for; three minutes of no writes means it is not going to finish on its own.
 try:
@@ -79,11 +87,11 @@ def loopback_prefixes():
             return m.group(1).split()
     except OSError:
         pass
-    return ["127.0.0", "127.0.1", "127.0.2", "127.0.3", "127.3.1", "127.3.2", "127.3.3"]
+    return ["127.0.1", "127.0.2", "127.3.1", "127.3.2"]
 
 
-# one sample address per range (127.0.0.1 is always there, so 127.0.0.2 stands for its range)
-EXPECTED_ALIASES = [p + (".2" if p == "127.0.0" else ".1") for p in loopback_prefixes()]
+# the last address of each range: the task adds them in order, so these are there only once it has finished
+EXPECTED_ALIASES = [p + ".254" for p in loopback_prefixes()]
 
 
 def say(line):
@@ -95,8 +103,14 @@ def as_admin(command, prompt):
     if DRYRUN:
         say("dry-run admin: " + command)
         return DRYRUN != "cancel"
-    return subprocess.run(["/usr/bin/osascript", "-e", admin_script(command, prompt)],
+    return subprocess.run(["/usr/bin/osascript", "-e", admin_script(root_command(command), prompt)],
                           capture_output=True).returncode == 0
+
+
+def root_command(command):
+    """The command with nothing from the player's environment: macOS's sudoers has no secure_path, and shasum is a Perl
+    script, so a PATH or PERL5OPT of theirs must not reach a root shell."""
+    return "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c " + quoted(command)
 
 
 def admin_script(command, prompt):
@@ -148,33 +162,76 @@ def net_check():
     return "ok" if all(a in have for a in EXPECTED_ALIASES) else "missing"
 
 
+def task_disabled():
+    """Whether the player turned the network task off (`sudo launchctl disable system/…`, the #37 workaround). Then
+    nothing here installs it, starts it or asks for a password for it."""
+    if DRYRUN and "RECLAIMER_TEST_TASK_DISABLED" in os.environ:
+        return os.environ["RECLAIMER_TEST_TASK_DISABLED"] == "1"
+    out = subprocess.run(["/bin/launchctl", "print-disabled", "system"], capture_output=True, text=True).stdout
+    return re.search(rf'"{re.escape(DAEMON)}" => (disabled|true)', out) is not None
+
+
+def task_installed():
+    """Root's copies of the task are what this script ships with, and the request folder is this player's alone."""
+    try:
+        st = REQUEST_DIR.lstat()
+    except OSError:
+        return False
+    return (file_sha256(Path(DAEMON_DIR) / "reclaimer-loopback.sh") == LOOPBACK_SHA
+            and file_sha256(INSTALLED_PLIST) == LOOPBACK_PLIST_SHA
+            and stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and stat.S_IMODE(st.st_mode) == 0o700)
+
+
+def task_status():
+    """How the task's last run went ("ok <added>", "adding", "taken-back", "stopped"), and when, or (None, 0)."""
+    try:
+        return STATUS.read_text().strip(), STATUS.stat().st_mtime
+    except OSError:
+        return None, 0
+
+
 def net_fix():
-    """Install the startup task's files again and restart it, which re-adds every address (as install.sh does)."""
-    script, plist = GAME / "reclaimer-loopback.sh", GAME / f"{DAEMON}.plist"
-    installed = Path(DAEMON_DIR) / "reclaimer-loopback.sh"
-    restart = (f"{{ launchctl bootout system/{DAEMON} 2>/dev/null; true; }} && "
-               f"launchctl bootstrap system {DAEMON_PLIST}")
-    if file_sha256(installed) == LOOPBACK_SHA and file_sha256(INSTALLED_PLIST) == LOOPBACK_PLIST_SHA:
-        command = restart  # (root's own copy is right: nothing of the player's needs to go to root)
-    else:
+    """Ask the network task to add the addresses, without a password. Only when root's copy of it isn't right (a new
+    install, or an update that changed it) install it again first, behind one password box."""
+    if task_disabled():
+        return ("error: Project Reclaimer's network task is turned off on this Mac, so it didn't add the local "
+                "network addresses. If you add them yourself, ignore this; otherwise servers may refuse the join.")
+    if not task_installed():
+        script, plist = GAME / "reclaimer-loopback.sh", GAME / f"{DAEMON}.plist"
         if not script.exists() or not plist.exists():
             return "error: This install is missing its network files. Open Project Reclaimer again to update it."
-        target = DAEMON_DIR + "/reclaimer-loopback.sh"
+        target, request = DAEMON_DIR + "/reclaimer-loopback.sh", str(REQUEST_DIR)
         # copy first, then check the copies (now only root can change them) against what this script ships with
-        command = (f"mkdir -p {quoted(DAEMON_DIR)} && "
+        command = (f"mkdir -p {quoted(DAEMON_DIR)} && chown root:wheel {quoted(DAEMON_DIR)} && "
+                   f"chmod 755 {quoted(DAEMON_DIR)} && "
                    f"install -o root -g wheel -m 755 {quoted(script)} {quoted(target)} && "
                    f"install -o root -g wheel -m 644 {quoted(plist)} {DAEMON_PLIST} && "
                    f"{{ printf '%s  %s\\n' {LOOPBACK_SHA} {quoted(target)} {LOOPBACK_PLIST_SHA} {DAEMON_PLIST} | "
-                   f"shasum -a 256 -c -s || {{ rm -f {quoted(target)} {DAEMON_PLIST}; false; }}; }} && " + restart)
-    if not as_admin(command, "Project Reclaimer is fixing its network settings."):
-        return "error: The network setup wasn't fixed (the password box was cancelled)."
+                   f"shasum -a 256 -c -s || {{ rm -f {quoted(target)} {DAEMON_PLIST}; false; }}; }} && "
+                   f"{{ [ -d {quoted(request)} ] || mkdir {quoted(request)}; }} && "
+                   f"chown {os.getuid()} {quoted(request)} && chmod 700 {quoted(request)} && "
+                   f"{{ launchctl bootout system/{DAEMON} 2>/dev/null; true; }} && "
+                   f"launchctl bootstrap system {DAEMON_PLIST}")
+        if not as_admin(command, "Project Reclaimer is setting up the local network addresses the game needs."):
+            return "error: The network setup wasn't fixed (the password box was cancelled)."
+    asked = time.time()
+    try:  # (a new file each time: launchd notices a change to the folder, not to a file in it)
+        (REQUEST_DIR / "add").unlink(missing_ok=True)
+        (REQUEST_DIR / "add").write_text(time.strftime("%Y-%m-%d %H:%M:%S\n"))
+    except OSError:
+        if not DRYRUN:
+            return "error: Couldn't ask for the network addresses. Open Project Reclaimer again to set them up."
     if DRYRUN:
         return "ok"
-    for _ in range(20):  # the task adds ~1,300 addresses; give it a moment
+    for _ in range(150):  # ~1,000 addresses, 25 at a time with configd's answer timed after each batch: ~20 s
         if net_check() == "ok":
             return "ok"
+        result, when = task_status()
+        if result in ("taken-back", "stopped") and when >= asked - 1:
+            return ("error: Your Mac's network service was slow to answer, so the network addresses were taken out "
+                    "again to keep the Mac safe. Open Project Reclaimer again in a few minutes to try again.")
         time.sleep(1)
-    return "error: The network setup is still incomplete. Restart your Mac, then open Project Reclaimer again."
+    return "error: The network setup is still incomplete. Open Project Reclaimer again in a few minutes."
 
 
 def gamecontrollerd_state():
@@ -504,6 +561,9 @@ def report():
     summary.append("Game: " + ", ".join(sorted(p.name for p in GAME.glob("project-reclaimer-v*.exe"))))
     summary.append(f"Free disk space: {shutil.disk_usage(BASE).free / 1e9:.0f} GB")
     summary.append("Network addresses: " + net_check())
+    summary.append("Network task: " + ("turned off" if task_disabled() else
+                                       "installed" if task_installed() else "not installed")
+                   + (f", last run: {task_status()[0]}" if task_status()[0] else ""))
     summary.append("Workshop mods: " + ", ".join(m["title"] for m in json.loads(mods())["mods"]))
     DESKTOP.mkdir(parents=True, exist_ok=True)
     path = DESKTOP / f"Project Reclaimer report {time.strftime('%Y-%m-%d %H.%M')}.zip"
@@ -710,15 +770,17 @@ def uninstall():
     stopped = force_quit()
     if stopped != "ok":
         return stopped  # (nothing deleted while the game still runs)
-    subprocess.run(["pkill", "-f", str(GAME / "workshop_helper.py")], capture_output=True)  # (only this install's)
-    shutil.rmtree(APP, ignore_errors=True)
-    shutil.rmtree(APP.with_name("Project Reclaimer Metal.app"), ignore_errors=True)  # (from early versions)
-    shutil.rmtree(BASE, ignore_errors=True)
+    # the root network task first: once the install is gone, nothing in the app could remove it any more
     if not os.environ.get("RECLAIMER_KEEP_NETWORK") and INSTALLED_PLIST.exists():
         removed = as_admin(f"launchctl bootout system/{DAEMON} 2>/dev/null; rm -f {DAEMON_PLIST}; "
                            f"rm -rf {quoted(DAEMON_DIR)}", "Project Reclaimer is removing its network setting.")
         if not removed:
-            return "ok network-kept"  # (harmless: extra local addresses that nothing else uses)
+            return ("error: Nothing was removed: Project Reclaimer needs your password to remove its network "
+                    "setting first. Try again.")
+    subprocess.run(["pkill", "-f", str(GAME / "workshop_helper.py")], capture_output=True)  # (only this install's)
+    shutil.rmtree(APP, ignore_errors=True)
+    shutil.rmtree(APP.with_name("Project Reclaimer Metal.app"), ignore_errors=True)  # (from early versions)
+    shutil.rmtree(BASE, ignore_errors=True)
     return "ok"
 
 
@@ -743,13 +805,6 @@ def main(argv):
         result = server_version(argv[2])
     elif len(argv) == 3 and argv[1] == "join":
         result = join(argv[2])
-    elif len(argv) == 2 and argv[1] == "net-check":
-        result = net_check()
-        for _ in range(8):  # right after login the startup task may still be adding its ~1,300 addresses
-            if result == "ok":
-                break
-            time.sleep(1)
-            result = net_check()
     elif len(argv) == 2 and argv[1] in COMMANDS:
         result = COMMANDS[argv[1]]()
     else:

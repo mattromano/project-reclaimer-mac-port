@@ -1,7 +1,7 @@
 #!/bin/bash
-# Remove Project Reclaimer Mac Port: apps, ~/Games/ProjectReclaimer (game files, Wine, mods) and the network startup task.
+# Remove Project Reclaimer Mac Port: apps, ~/Games/ProjectReclaimer (game files, Wine, mods) and the network task.
 #   RECLAIMER_YES=1           don't ask for confirmation
-#   RECLAIMER_KEEP_NETWORK=1  leave the local-address startup task installed
+#   RECLAIMER_KEEP_NETWORK=1  leave the local-address task installed
 set -euo pipefail
 BASE=${RECLAIMER_HOME:-$HOME/Games/ProjectReclaimer}
 APPS=${RECLAIMER_APPS_DIR:-$HOME/Applications}
@@ -21,14 +21,18 @@ fi
 pkill -f 'project-reclaimer-v[0-9.]+\.exe' 2>/dev/null || true
 pkill -f "$BASE/game/workshop_helper.py" 2>/dev/null || true
 pkill -f "$APPS/Project Reclaimer.app/Contents/MacOS/ProjectReclaimer" 2>/dev/null || true
+# the root network task first: once the install is gone, nothing would remove it any more
+if [ -z "${RECLAIMER_KEEP_NETWORK:-}" ] && [ -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
+  echo "Removing the network task (needs your Mac password)..."
+  sudo /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c '
+    launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null;
+    rm -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist;
+    rm -rf "/Library/Application Support/ProjectReclaimer"' </dev/tty ||
+    { echo "Nothing was removed: removing the network task needs your Mac password. Run this again." >&2; exit 1; }
+  echo "The extra local addresses go away at the next restart."
+fi
+
 # (the Metal app came from older versions of the installer)
 rm -rf "$APPS/Project Reclaimer.app" "$APPS/Project Reclaimer Metal.app" "$BASE"
 
-if [ -z "${RECLAIMER_KEEP_NETWORK:-}" ] && [ -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
-  echo "Removing the network startup task (needs your Mac password)..."
-  sudo /bin/sh -c 'launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null;
-    rm -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist;
-    rm -rf "/Library/Application Support/ProjectReclaimer"' </dev/tty
-  echo "The extra local addresses go away at the next restart."
-fi
 echo "Done."

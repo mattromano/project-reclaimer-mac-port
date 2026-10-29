@@ -1,4 +1,4 @@
-"""The installed app bundle (scripts/make_app.sh) and the startup task's address ranges.
+"""The installed app bundle (scripts/make_app.sh) and the network task's address ranges.
 
 make_app.sh builds into a throwaway apps folder (RECLAIMER_APPS_DIR), never ~/Applications.
 Run: /usr/bin/python3 -I -m unittest discover -s tests
@@ -39,12 +39,14 @@ class AppBundleTest(unittest.TestCase):
 
 
 class LoopbackRangesTest(unittest.TestCase):
-    def test_startup_task_covers_the_ranges_releases_bind(self):
-        # 127.3.2.x: 0.9.13 bound there and every join was refused until it was added (GitHub issue #3)
+    def test_network_task_covers_the_ranges_releases_bind(self):
+        # 127.0.1.N/127.0.2.N: the client's slot N ("Local client slot N: transport 127.0.1.N, native bind 127.0.2.N",
+        # 0.9.8 to 0.9.23). 127.3.1.x/127.3.2.x: the native UDP bind, which moves between releases; 0.9.13 bound
+        # 127.3.2.124 and every join was refused until that range was added (GitHub issue #3). No release from 0.9.8
+        # on binds anything in 127.0.0.x but 127.0.0.1, which macOS has, so that range's 253 aliases are gone.
         text = (REPO / "scripts" / "reclaimer-loopback.sh").read_text()
         prefixes = text.split("for p in ", 1)[1].split("; do", 1)[0].split()
-        for p in ("127.0.0", "127.0.1", "127.0.2", "127.3.1", "127.3.2"):
-            self.assertIn(p, prefixes)
+        self.assertEqual(prefixes, ["127.0.1", "127.0.2", "127.3.1", "127.3.2"])
 
 
 if __name__ == "__main__":

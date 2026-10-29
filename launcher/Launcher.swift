@@ -230,14 +230,15 @@ final class Launcher: ObservableObject {
         memoryNotice = startupExpectation(tier: fitAnswer, cacheBuilt: cacheBuilt)
     }
 
-    /// The local network addresses Reclaimer needs (added by a startup task) can go missing, e.g. right after a restart
-    /// or a macOS update; without them every server refuses the join. Fix them before Play, with one password box.
+    /// The local network addresses Reclaimer needs go away at every restart, and without them every server refuses the
+    /// join. Add them before Play: the network task does it without a password (one password box if it needs
+    /// installing again).
     func checkNetwork() {
         keep(python("tools.py", ["net-check"], onLine: { [self] line in
             guard line == "missing" else { return }
-            network = .working("Fixing the network setup. macOS will ask for your Mac password.")
+            network = .working("Adding the local network addresses the game needs…")
             keep(python("tools.py", ["net-fix"], onLine: { [self] result in
-                if result == "ok" { network = .done("Fixed") }
+                if result == "ok" { network = .done("Ready") }
                 else if result.hasPrefix("error: ") { network = .warning(String(result.dropFirst(7))) }
             }, onExit: { [self] _ in
                 if network?.finished == false { network = .warning("The network setup couldn't be fixed. Servers may refuse to let you join.") }

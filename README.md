@@ -30,8 +30,9 @@ and adds a **Project Reclaimer** app to your Mac.
      file against a known SHA-256 checksum;
    - shows a **QR code**: scan it with the Steam app on your phone. Only Halo 3 is downloaded, from your own Steam
      account (~35 GB), with a progress bar and the time left. Nothing is shared from anyone else's copy;
-   - asks for your **Mac password** once, for a small startup task that enables the local network addresses
-     Reclaimer uses (`127.0.0.x`–`127.0.2.x`, `127.3.1.x`–`127.3.2.x`; macOS only enables `127.0.0.1` by default);
+   - asks for your **Mac password** once, for a small task that adds the local network addresses Reclaimer uses
+     (`127.0.1.x`–`127.0.2.x`, `127.3.1.x`–`127.3.2.x`; macOS only enables `127.0.0.1` by default). It runs when the
+     app asks before you play, never at startup, and needs no password after this;
    - puts **Project Reclaimer** in `~/Applications` and opens it. You can eject and delete the disk image.
 
 If something fails, the window says what happened; **Try Again** picks up where it stopped. After this, the app keeps
@@ -73,8 +74,8 @@ Open **Project Reclaimer** from Spotlight or Launchpad. A small window gets ever
 The window's **Problems joining or playing?** section explains the game messages players hit most (a server on an
 older version, a server with an outdated mod, and so on) and has a **Show logs** button for sending you the logs.
 
-Before Play, the window also checks the local network addresses the game needs (they can go missing after a restart
-or a macOS update) and fixes them with one password prompt. If the game crashes, the window says what happened in
+Before Play, the window also checks the local network addresses the game needs (they go away at every restart) and
+has the network task add them, without a password. If the game crashes, the window says what happened in
 plain words and stays open for **Play again**.
 
 **Tools** (the gear button) handles the rest without Terminal: **Force Quit** a frozen game; under **Installed
@@ -130,7 +131,7 @@ The game's log (`~/Games/ProjectReclaimer/logs/client-wine.log`) starts with `sa
 |---|---|
 | "Could not join that server" on every server, especially after a Reclaimer update | A new release may use new local addresses. Quit the game and open Project Reclaimer again: the update installs the fix (it may ask for your Mac password). |
 | Mods won't download / "Start Steam…" | Look at the Project Reclaimer window: if it shows a QR code, scan it with the Steam app. If it says a mod couldn't download, press Try Again in the game. |
-| Game won't start right after a reboot | The window checks the network addresses before Play and fixes them (asks for your Mac password). |
+| Game won't start right after a reboot | The window checks the network addresses before Play and adds them (no password). |
 | "Public join timed out" on one server | That server didn't answer: usually it runs an older Project Reclaimer ("This server runs an older version" on its card) or its port is closed. Pick another server; the server browser's filters can hide servers running another version. If **every** server times out, quit and reopen Project Reclaimer (it checks the network setup). |
 | Stuck on "Synchronizing players" for minutes | Usually the server (its clock is stuck for everyone). Try another server. |
 | "Graphics card stopped responding" | A GPU fault in the DirectX → Metal translation, mostly on heavy modded maps. Relaunch; lower Settings → render resolution if it repeats. |
@@ -152,7 +153,7 @@ Tools → **Uninstall** in the app. Or in Terminal:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/mattromano/project-reclaimer-mac-port/main/uninstall.sh)"
 ```
 
-Removes the app, `~/Games/ProjectReclaimer` (Halo 3 and Halo 3: ODST's files, Wine, mods) and the network startup task.
+Removes the app, `~/Games/ProjectReclaimer` (Halo 3 and Halo 3: ODST's files, Wine, mods) and the network task.
 
 ## How it works (and why)
 
@@ -163,7 +164,7 @@ The problems found while porting it, and what the scripts do about each:
 | Wine's built-in DirectX 11 can't create a device on MoltenVK, so the engine crashes on start | DXVK-macOS `d3d11`/`d3d10core` in the Wine prefix's `system32` |
 | Reclaimer's menu (egui/glutin) needs OpenGL 3.0+, but Wine on macOS only gives 2.1 to apps that don't request a core profile | Mesa's `opengl32.dll` (llvmpipe) next to the game, with `LP_NUM_THREADS=0` (its worker threads each used a full core) |
 | Crash mid-match in `xaudio2_9.dll`, and poor audio | MCC's `xaudio2_9redist.dll` hands off to Wine's FAudio on "Windows 10"; `xaudio2_9=d` keeps Microsoft's own mixer |
-| Joins refused / engine crashes binding `127.x.y.z` | A LaunchDaemon aliases `127.0.0.x`–`127.0.2.x` and `127.3.1.x`–`127.3.2.x` on `lo0` at boot (0.9.8 added `127.0.2.x`, 0.9.13 `127.3.2.x`): only the missing ones, 50 a second, since one burst of ~1,800 stalled `configd` and panicked Macs with VPNs (#37). The app updates it and re-adds missing ones before Play |
+| Joins refused / engine crashes binding `127.x.y.z` | macOS binds only addresses added to `lo0` one by one, and the client picks a new slot each session, so a LaunchDaemon aliases every host of `127.0.1.x`–`127.0.2.x` (the slot) and `127.3.1.x`–`127.3.2.x` (the native UDP bind). It runs when the app asks before Play, through a folder only the player can write, never at boot: ~1,800 aliases at every boot stalled `configd` and panicked Macs with VPNs (#37). It adds 25 at a time, times `configd`'s answer after each batch, and takes its addresses back if `configd` stops answering. `sudo launchctl disable system/local.projectreclaimer.loopback` turns it off for good (updates then leave it alone). See `docs/adr/0002-loopback-addresses-on-request.md` |
 | Uncapped frame rate kept the Mac maxed out even at the menu | 60 fps cap |
 | Halo 3's engine thread polls the clock ~40,000 times a second between frames: one full CPU core under Rosetta, menu and match alike | `spinfix`: a small `d3d11.dll` in front of DXVK that makes halo3.dll's clock polling sleep 1 ms once it reads the clock 8+ times within a millisecond. Menu ~2.4 → ~1.5 cores, match ~1.75 → ~0.9, same 60 fps. Source in `spinfix/`; set `RECLAIMER_SPINFIX_US=0` to turn it off |
 | DXVK rebuilt its swapchain every frame (a 1080p swapchain in a differently sized full-screen window), stalling the GPU each time | Windowed at exactly the render size: ~95 → ~120 fps uncapped |

@@ -1,7 +1,7 @@
 """Tests for scripts/tools.py (the launcher's Tools menu and auto-fixes), in throwaway homes.
 
 Admin actions run with RECLAIMER_TOOLS_DRYRUN=1, which prints the command instead of asking for a password, so the
-real network startup task is never touched. Run: /usr/bin/python3 -I -m unittest discover -s tests
+real network task is never touched. Run: /usr/bin/python3 -I -m unittest discover -s tests
 """
 import importlib.util
 import json
@@ -38,8 +38,10 @@ class ToolsTest(unittest.TestCase):
         self.desktop.mkdir()
         self.daemon = self.tmp / "local.projectreclaimer.loopback.plist"  # stands in for /Library/LaunchDaemons/…
         self.daemon.write_text("<plist/>")
+        self.daemon_dir = self.tmp / "daemon-dir"  # stands in for /Library/Application Support/ProjectReclaimer
         self.env = dict(os.environ, RECLAIMER_HOME=str(self.home), RECLAIMER_TOOLS_DRYRUN="1",
-                        RECLAIMER_TEST_DAEMON_PLIST=str(self.daemon),
+                        RECLAIMER_TEST_DAEMON_PLIST=str(self.daemon), RECLAIMER_TEST_DAEMON_DIR=str(self.daemon_dir),
+                        RECLAIMER_TEST_TASK_DISABLED="0",
                         RECLAIMER_APPS_DIR=str(self.apps), RECLAIMER_DESKTOP=str(self.desktop),
                         RECLAIMER_GAME_PROCESS=r"project-reclaimer-v9\.9\.99\.exe game-client")
 
@@ -173,14 +175,61 @@ class ToolsTest(unittest.TestCase):
         with mock.patch.object(t, "lo0", return_value="lo0: flags\n\tinet 127.0.0.1 netmask 0xff000000\n"):
             self.assertEqual(t.net_check(), "missing")
 
+    def test_net_check_waits_for_the_task_to_finish(self):
+        # a join while the task is still adding the last range failed: only the last address of each range counts
+        t = self.load()
+        part = "\n".join(f"\tinet {p}.{i} netmask 0xffffffff" for p in t.loopback_prefixes() for i in range(1, 254))
+        with mock.patch.object(t, "lo0", return_value="lo0: flags\n" + part):
+            self.assertEqual(t.net_check(), "missing")
+        self.assertTrue(all(a.endswith(".254") for a in t.EXPECTED_ALIASES))
+
     def test_expected_aliases_come_from_the_installed_loopback_script(self):
         script = self.home / "game" / "reclaimer-loopback.sh"
-        script.write_text(script.read_text().replace("; do", " 127.0.9; do", 1))  # a range a release adds
+        script.write_text(script.read_text().replace(" 127.3.2; do", " 127.3.2 127.0.9; do", 1))  # a range a release adds
         t = self.load()
-        for prefix in ("127.0.0.", "127.0.1.", "127.0.2.", "127.3.1.", "127.0.9."):
+        for prefix in ("127.0.1.", "127.0.2.", "127.3.1.", "127.3.2.", "127.0.9."):
             self.assertTrue(any(a.startswith(prefix) for a in t.EXPECTED_ALIASES), prefix)
 
-    def test_net_fix_reinstalls_and_restarts_the_startup_task_with_one_password_prompt(self):
+    def installed_task(self, request_mode=0o700):
+        """Root's copies as this version ships them, and the player's request folder."""
+        self.daemon_dir.mkdir()
+        shutil.copy(REPO / "scripts" / "reclaimer-loopback.sh", self.daemon_dir / "reclaimer-loopback.sh")
+        shutil.copy(REPO / "scripts" / "local.projectreclaimer.loopback.plist", self.daemon)
+        (self.daemon_dir / "request").mkdir()
+        (self.daemon_dir / "request").chmod(request_mode)
+
+    def test_net_fix_asks_the_installed_task_without_a_password(self):
+        # after every restart: the launcher asks through the request folder, launchd starts the task as root
+        self.installed_task()
+        rc, out = self.run_tool("net-fix")
+        self.assertEqual(out[-1], "ok", out)
+        self.assertFalse([l for l in out if l.startswith("dry-run admin: ")], out)
+        self.assertTrue((self.daemon_dir / "request" / "add").exists())
+
+    def test_net_fix_reinstalls_a_request_folder_others_could_write(self):
+        self.installed_task(request_mode=0o777)
+        rc, out = self.run_tool("net-fix")
+        self.assertEqual(len([l for l in out if l.startswith("dry-run admin: ")]), 1, out)
+
+    def test_net_fix_leaves_a_task_the_player_turned_off_alone(self):
+        # the #37 workaround (`launchctl disable`): no password box, no reinstall, every time the launcher opens
+        rc, out = self.run_tool("net-fix", RECLAIMER_TEST_TASK_DISABLED="1")
+        self.assertFalse([l for l in out if l.startswith("dry-run admin: ")], out)
+        self.assertTrue(out[-1].startswith("error: "), out)
+        self.assertIn("turned off", out[-1])
+
+    def test_task_disabled_reads_launchds_disabled_list(self):
+        t = self.load()
+        os.environ.pop("RECLAIMER_TEST_TASK_DISABLED")
+        for listed, disabled in (('"local.projectreclaimer.loopback" => disabled', True),  # (macOS 14+)
+                                 ('"local.projectreclaimer.loopback" => true', True),      # (older macOS)
+                                 ('"local.projectreclaimer.loopback" => enabled', False),
+                                 ('"com.example.other" => disabled', False)):
+            with mock.patch.object(t.subprocess, "run") as run:
+                run.return_value.stdout = f"disabled services = {{\n\t\t{listed}\n\t}}\n"
+                self.assertEqual(t.task_disabled(), disabled, listed)
+
+    def test_net_fix_installs_the_task_with_one_password_prompt(self):
         rc, out = self.run_tool("net-fix")
         self.assertEqual(rc, 0, out)
         admin = [l for l in out if l.startswith("dry-run admin: ")]
@@ -191,6 +240,9 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("/Library/LaunchDaemons/local.projectreclaimer.loopback.plist", cmd)
         self.assertIn("launchctl bootstrap system", cmd)
         self.assertIn("reclaimer-loopback.sh", cmd)
+        # the request folder: the player's alone, so neither the sandboxed game nor another account can ask
+        request = "'" + str(self.daemon_dir / "request") + "'"
+        self.assertIn(f"chown {os.getuid()} {request} && chmod 700 {request}", cmd)
         self.assertEqual(out[-1], "ok")
 
     def test_net_fix_root_command_checks_what_it_installed(self):
@@ -203,7 +255,7 @@ class ToolsTest(unittest.TestCase):
         self.assertIn(t.LOOPBACK_PLIST_SHA, cmd)
         self.assertLess(cmd.index("install -o root"), cmd.index("shasum"))
         # the check itself, run on stand-ins for the two root-owned copies: right files pass, a swapped one is removed
-        check = cmd[cmd.index("{ printf"):cmd.index("&& { launchctl")]
+        check = cmd[cmd.index("{ printf"):cmd.index("&& { [ -d")]
         for swapped in (False, True):
             d = self.tmp / f"root-{swapped}"
             d.mkdir()
@@ -217,17 +269,6 @@ class ToolsTest(unittest.TestCase):
             rc = subprocess.run(["/bin/sh", "-c", run], capture_output=True).returncode
             self.assertEqual(rc != 0, swapped, run)
             self.assertEqual(script.exists(), not swapped)
-
-    def test_net_fix_restarts_the_installed_task_without_reinstalling_it(self):
-        # the root-owned copy is already right: only restart it, so no file of the player's goes to root at all
-        daemon_dir = self.tmp / "daemon-dir"
-        daemon_dir.mkdir()
-        shutil.copy(REPO / "scripts" / "reclaimer-loopback.sh", daemon_dir / "reclaimer-loopback.sh")
-        shutil.copy(REPO / "scripts" / "local.projectreclaimer.loopback.plist", self.daemon)
-        rc, out = self.run_tool("net-fix", RECLAIMER_TEST_DAEMON_DIR=str(daemon_dir))
-        cmd = next(l for l in out if l.startswith("dry-run admin: "))
-        self.assertNotIn("install -o root", cmd)
-        self.assertIn("launchctl bootstrap system", cmd)
 
     def test_root_commands_run_with_a_clean_environment(self):
         # (macOS's sudoers has no secure_path, and shasum is Perl: PATH or PERL5OPT from the player's environment
@@ -243,7 +284,7 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin", run.call_args[0][0][-1])
 
     def test_test_only_daemon_paths_are_ignored_outside_tests(self):
-        # (where root installs its startup task must not be steerable by an environment variable)
+        # (where root installs its network task must not be steerable by an environment variable)
         env = dict(self.env, RECLAIMER_TEST_DAEMON_DIR=str(self.tmp / "x"),
                    RECLAIMER_TEST_DAEMON_PLIST=str(self.tmp / "y"), RECLAIMER_TOOLS_DRYRUN="")
         with mock.patch.dict(os.environ, env, clear=True):
@@ -793,7 +834,7 @@ class ToolsTest(unittest.TestCase):
         self.assertFalse([l for l in out if l.startswith("dry-run admin: ")])
 
     def test_uninstall_removes_nothing_when_the_password_box_was_cancelled(self):
-        # the root startup task goes first: deleting the install before asking left it with no way to be removed
+        # the root network task goes first: deleting the install before asking left it with no way to be removed
         rc, out = self.run_tool("uninstall", RECLAIMER_TOOLS_DRYRUN="cancel")
         self.assertTrue(out[-1].startswith("error: "), out)
         self.assertTrue(self.home.exists())

@@ -44,6 +44,28 @@ class InstallGuiTest(unittest.TestCase):
         self.assertIn('T=$(mktemp -d "$BASE/game/', block)
         self.assertIn("/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin", text[text.index("as_admin() {"):])
 
+    def network_step(self):
+        text = (REPO / "install.sh").read_text()
+        return text[text.index('bold "Local network addresses'):text.index('bold "Tuned graphics settings"')]
+
+    def test_network_step_leaves_a_task_the_player_turned_off_alone(self):
+        # (the #37 workaround, `launchctl disable`: launchd refuses to load the task, so trying to install it again
+        # failed every update, and asked for a password each time first)
+        step = self.network_step()
+        check = step.index("launchctl print-disabled system")
+        self.assertLess(check, step.index("as_admin"))
+        self.assertLess(check, step.index("mktemp"))
+        # (read whole: under pipefail an early-exiting grep -q SIGPIPEs launchctl, and the match is missed)
+        self.assertNotIn("launchctl print-disabled system 2>/dev/null | grep", step)
+
+    def test_network_step_gives_the_request_folder_to_the_player_alone(self):
+        step = self.network_step()
+        self.assertIn("chown $(id -u) '$LB_DIR/request' && chmod 700 '$LB_DIR/request'", step)
+        self.assertIn("chown root:wheel '$LB_DIR' && chmod 755 '$LB_DIR'", step)
+        self.assertIn('[ ! -O "$LB_DIR/request" ]', step)  # (reinstalled when it isn't the player's alone)
+        self.assertIn('[ "$(stat -f %Lp "$LB_DIR/request")" != 700 ]', step)
+        self.assertIn("cmp -s \"$T/local.projectreclaimer.loopback.plist\"", step)  # (the old boot-time plist goes)
+
     def test_every_wine_start_is_sandboxed(self):
         # (an unsandboxed wineboot would run DLLs the sandboxed game could have changed)
         text = (REPO / "install.sh").read_text()

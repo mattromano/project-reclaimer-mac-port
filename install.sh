@@ -33,10 +33,10 @@ MOLTENVK_PKG="MoltenVK-macos-1.4.2.tar|https://github.com/KhronosGroup/MoltenVK/
 MESA_PKG="mesa3d-26.2.4-release-msvc.7z|https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z|351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695"
 DEPOT_PKG="DepotDownloader-macos-arm64.zip|https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-macos-arm64.zip|60e80c7c496f3f9a079cd3c62036b35d088c27bc0149baf38f009eb57a52f6a5"
 SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # spinfix/d3d11.dll (built from spinfix/spinfix.c)
-# the root startup task (scripts/reclaimer-loopback.sh and its plist): checked as root after they're copied where only
-# root can write, so a file swapped in the meantime never runs at boot (also in tools.py; the tests check all match)
-LOOPBACK_SHA=3279e9f80d0e4f79d1d83ce7fe7c03c0c143ff6a88ee6fe51565e9125c5af436
-LOOPBACK_PLIST_SHA=27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd
+# the root network task (scripts/reclaimer-loopback.sh and its plist): checked as root after they're copied where only
+# root can write, so a file swapped in the meantime never runs as root (also in tools.py; the tests check all match)
+LOOPBACK_SHA=8cef5d0ba5578169376e009259a2e6d8b5c3bce18d423e07515f7723bbca1eca
+LOOPBACK_PLIST_SHA=2f88cf323d268575862f8e3271b6d44f859d9697a60e6f83c26a12cc481892c0
 LAUNCHER_SHA=10cba37f58f31797a0332499194870dcc3d961d6671c959357e9694305d41a2a  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
 GUI=${RECLAIMER_GUI:-}
@@ -164,7 +164,7 @@ fi
 note "ok"
 
 bold "Game scripts and Workshop mod helper"
-# (the network files are kept here too, so the window's network fix can reinstall the startup task)
+# (the network files are kept here too, so the window's network fix can reinstall the network task)
 for f in run.sh launch.sh sandboxed.sh wine-sandbox.sb gamecontrollerdb.txt workshop_helper.py presets.py fit.py \
          game_process.py updater.py tools.py reclaimer-loopback.sh \
          local.projectreclaimer.loopback.plist; do script_file "scripts/$f" "$BASE/game/$f"; done
@@ -268,27 +268,41 @@ fi
 mkdir -p "$BASE/prefix-wine/$STEAM_REL/steamapps/workshop/content/$MCC_APP"
 
 bold "Local network addresses (needs your Mac password once)"
-note "Reclaimer talks to the game over 127.0.0-2.x / 127.3.1-2.x; macOS only enables 127.0.0.1."
-note "This installs a small startup task (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist)."
-# (staged in game/, which the sandboxed game can't write: root reads these files)
-T=$(mktemp -d "$BASE/game/.loopback.XXXXXX")
-script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
-script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
+note "Reclaimer talks to the game over 127.0.1-2.x / 127.3.1-2.x; macOS only enables 127.0.0.1."
+note "This installs a small task (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist) that adds them"
+note "when the app asks, before you play. It never runs at startup, and needs no password after this."
 LB_DIR="/Library/Application Support/ProjectReclaimer"
-# (re)install when missing or when a Reclaimer release needed new address ranges
-if ! cmp -s "$T/reclaimer-loopback.sh" "$LB_DIR/reclaimer-loopback.sh" ||
-   [ ! -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
-  as_admin "mkdir -p '$LB_DIR' &&
-    install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '$LB_DIR/reclaimer-loopback.sh' &&
-    install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
-    { printf '%s  %s\\n' $LOOPBACK_SHA '$LB_DIR/reclaimer-loopback.sh' $LOOPBACK_PLIST_SHA /Library/LaunchDaemons/local.projectreclaimer.loopback.plist |
-      shasum -a 256 -c -s || { rm -f '$LB_DIR/reclaimer-loopback.sh' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist; false; }; } &&
-    { launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null; true; } &&
-    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" \
-    "Project Reclaimer is setting up the local network addresses the game needs." ||
-    die "The network setting wasn't installed (the password box was cancelled or refused). Press Try Again."
+# (read whole first: under pipefail, a grep -q that stops early would SIGPIPE launchctl and miss the match)
+LB_DISABLED=$(launchctl print-disabled system 2>/dev/null || true)
+if grep -Eq '"local\.projectreclaimer\.loopback" => (disabled|true)' <<< "$LB_DISABLED"; then
+  # (turned off by the player, e.g. the #37 workaround: launchd refuses to load it, so updates would fail here for good.
+  # An older version's files stay as they were, so turning it back on needs an update before the next restart)
+  note "skipped: you turned this task off. To turn it back on: sudo launchctl enable system/local.projectreclaimer.loopback,"
+  note "then open Project Reclaimer before you restart the Mac (it installs the current task)."
+else
+  # (staged in game/, which the sandboxed game can't write: root reads these files)
+  T=$(mktemp -d "$BASE/game/.loopback.XXXXXX")
+  script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
+  script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
+  # (re)install when missing, when a Reclaimer release needed new address ranges, or when the task changed. The request
+  # folder is the player's (mode 700) in root's folder: the launcher asks through it, launchd watches it, root never
+  # opens it
+  if ! cmp -s "$T/reclaimer-loopback.sh" "$LB_DIR/reclaimer-loopback.sh" ||
+     ! cmp -s "$T/local.projectreclaimer.loopback.plist" /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ||
+     [ ! -d "$LB_DIR/request" ] || [ ! -O "$LB_DIR/request" ] || [ "$(stat -f %Lp "$LB_DIR/request")" != 700 ]; then
+    as_admin "mkdir -p '$LB_DIR' && chown root:wheel '$LB_DIR' && chmod 755 '$LB_DIR' &&
+      install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '$LB_DIR/reclaimer-loopback.sh' &&
+      install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
+      { printf '%s  %s\\n' $LOOPBACK_SHA '$LB_DIR/reclaimer-loopback.sh' $LOOPBACK_PLIST_SHA /Library/LaunchDaemons/local.projectreclaimer.loopback.plist |
+        shasum -a 256 -c -s || { rm -f '$LB_DIR/reclaimer-loopback.sh' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist; false; }; } &&
+      { [ -d '$LB_DIR/request' ] || mkdir '$LB_DIR/request'; } && chown $(id -u) '$LB_DIR/request' && chmod 700 '$LB_DIR/request' &&
+      { launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null; true; } &&
+      launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" \
+      "Project Reclaimer is setting up the local network addresses the game needs." ||
+      die "The network setting wasn't installed (the password box was cancelled or refused). Press Try Again."
+  fi
+  rm -rf "$T"
 fi
-rm -rf "$T"
 note "ok"
 
 # only a fresh install (or RECLAIMER_RESET_GRAPHICS=1) gets the tuned settings; otherwise the player's own stay

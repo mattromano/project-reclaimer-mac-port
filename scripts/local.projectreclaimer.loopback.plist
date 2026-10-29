@@ -5,6 +5,10 @@
   <key>Label</key><string>local.projectreclaimer.loopback</string>
   <key>ProgramArguments</key>
   <array><string>/Library/Application Support/ProjectReclaimer/reclaimer-loopback.sh</string></array>
-  <key>RunAtLoad</key><true/>
+  <!-- no RunAtLoad: it runs when the launcher asks, by changing this folder (only the player's account can write it;
+       the sandboxed game can't), and at most once every five minutes -->
+  <key>WatchPaths</key>
+  <array><string>/Library/Application Support/ProjectReclaimer/request</string></array>
+  <key>ThrottleInterval</key><integer>300</integer>
 </dict>
 </plist>

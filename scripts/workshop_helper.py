@@ -64,6 +64,10 @@ WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" /
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
             for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
 GAME_GRACE = 60  # seconds the game must be gone before the watching helper stops
+POLL = 2  # seconds between rescans of the client log
+# seconds after a failed fetch before the game asking for that mod again (Try Again, a rejoin) fetches it again: the
+# same join's other lines don't start a second try, and a player's Try Again comes later
+RETRY_AFTER = 3
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")
 FALLBACK = re.compile(r"^Workshop for (.+?) unavailable: .*using the server")
@@ -333,6 +337,9 @@ def same_title(a, b):
     return re.sub(r"[^a-z0-9]+", " ", a.lower()).strip() == re.sub(r"[^a-z0-9]+", " ", b.lower()).strip()
 
 
+SEARCH_DETAILS = 50  # search results whose titles are checked (a search page lists 30)
+
+
 def id_from_search(title):
     """The MCC Workshop item with this title (case and punctuation aside); tolerates suffixes like ' - Beta'. Never a
     merely similar title: "Halo 2 Spartan" once fetched the unrelated "Halo 2 But Everyone is a Spartan"."""
@@ -340,10 +347,13 @@ def id_from_search(title):
     url = ("https://steamcommunity.com/workshop/browse/?appid=" + APP_ID
            + "&searchtext=" + urllib.parse.quote(base) + "&browsesort=textsearch")
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
-        ids = sorted(set(re.findall(r"filedetails/\?id=(\d+)", r.read().decode("utf-8", "replace"))))
+        page = r.read().decode("utf-8", "replace")
+    # in the page's order, which is the search's (best match first). Sorted by ID and cut to 20, a page of 30 results
+    # lost its newest items, the highest IDs: "HugeGrass Rebalance", the search's first result, was never found.
+    ids = list(dict.fromkeys(re.findall(r"filedetails/\?id=(\d+)", page)))
     if not ids:
         return None
-    details = workshop_details(ids[:20])
+    details = workshop_details(ids[:SEARCH_DETAILS])
     for wanted in (title, base):  # the full title first: "Foo - Remastered" over "Foo"
         for f in details:
             if same_title(f.get("title") or "", wanted):
@@ -526,15 +536,19 @@ def _fetch(wid, item, ready_hint):
     return download(wid, title, details, ready_hint)
 
 
-def fetcher(jobs):
-    """One download at a time (DepotDownloader shares one saved login), off the log-watching loop."""
+def fetcher(jobs, failed):
+    """One download at a time (DepotDownloader shares one saved login), off the log-watching loop. A mod it couldn't
+    get goes on `failed`, so the game asking for it again (Try Again, a rejoin) tries again."""
     while True:
         item, hint = jobs.get()
+        ok = False
         try:
-            fetch(item, hint)
+            ok = fetch(item, hint)
         except Exception as e:  # keep going after network or parse errors
             notify(f"Could not download {item}: {e}")
         finally:
+            if not ok:
+                failed.put(item)
             jobs.task_done()
 
 
@@ -556,7 +570,8 @@ def game_running():
 
 
 def watch():
-    """Rescan the client log every 2 s until the game exits; fetch each failed Workshop mod once."""
+    """Rescan the client log every POLL seconds until the game exits; fetch each Workshop mod the game couldn't get
+    (once, and again if the game asks again after that fetch failed)."""
     # a lock, not a process search: any command line that merely mentions this helper would match a search
     STATUS_DIR.mkdir(parents=True, exist_ok=True)
     lock = open(STATUS_DIR / ".watch.lock", "w")
@@ -571,13 +586,28 @@ def watch():
     except Exception as e:
         log(f"could not update the Workshop manifest: {e}")
     seen, pos, last_seen, joining = set(), 0, time.time(), None
-    jobs = queue.Queue()
-    threading.Thread(target=fetcher, args=(jobs,), daemon=True).start()
+    jobs, failed, retry_at = queue.Queue(), queue.Queue(), {}
+    threading.Thread(target=fetcher, args=(jobs, failed), daemon=True).start()
+
+    def wanted(title):
+        # each mod once, and again when the game asks after a failed fetch: one failure used to leave a mod missing
+        # for the rest of the session, however often the player pressed Try Again
+        if title in seen:
+            return False
+        if time.time() < retry_at.get(title, 0):
+            log(f"game asked again for {title} right after a failed try; its next ask tries again")
+            return False
+        return True
+
     # keep going until the game has been gone for 60 s straight: one missed check (or Reclaimer restarting itself
     # after an update) used to stop the helper while the game was still running
     while time.time() - last_seen < GAME_GRACE:
         if game_running():
             last_seen = time.time()
+        while not failed.empty():  # (only this loop takes from it)
+            title = failed.get_nowait()
+            seen.discard(title)
+            retry_at[title] = time.time() + RETRY_AFTER
         try:
             size = LOG.stat().st_size
             if size < pos:  # log was truncated by a new game launch
@@ -605,17 +635,17 @@ def watch():
                     log(f"{m.group(1)} is a character pack the server shares; nothing to get from Steam")
                 continue
             m = FAILED.match(line)
-            if m and m.group(1) not in seen:
+            if m and wanted(m.group(1)):
                 seen.add(m.group(1))
                 log("game could not download Workshop mod: " + m.group(1))
                 jobs.put((m.group(1), "Press Try Again in the game."))
                 continue
             m = FALLBACK.match(line)
-            if m and m.group(1) not in seen:
+            if m and wanted(m.group(1)):
                 seen.add(m.group(1))
                 log("game is downloading Workshop mod from servers instead: " + m.group(1))
                 jobs.put((m.group(1), "If the game is still downloading it, leave and rejoin to use this copy."))
-        time.sleep(min(2, GAME_GRACE))
+        time.sleep(min(POLL, GAME_GRACE))
     if jobs.unfinished_tasks:
         log("game exited; finishing mod downloads first")
     jobs.join()  # a download started in the game finishes, so the mod is ready next time

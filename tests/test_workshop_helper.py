@@ -3,6 +3,7 @@
 Run: /usr/bin/python3 -I -m unittest discover -s tests
 """
 import importlib.util
+import itertools
 import json
 import queue
 import threading
@@ -253,14 +254,23 @@ class HelperTest(unittest.TestCase):
         self.assertEqual((final["title"], final["percent"], final["bytes_total"]), ("Warlock", 100.0, 1600000000))
 
     def search(self, h, title, found):
-        """id_from_search(title) when the Workshop search page lists `found` ({id: title})."""
+        """id_from_search(title) when the Workshop search page lists `found` ({id: title}, in the page's order)."""
         page = " ".join(f'<a href="https://steamcommunity.com/sharedfiles/filedetails/?id={i}">' for i in found)
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = page.encode()
-        details = [{"publishedfileid": i, "title": t} for i, t in found.items()]
+
+        def details(ids):  # (only the items asked about, as Steam's API answers)
+            return [{"publishedfileid": i, "title": found[i]} for i in ids if i in found]
         with mock.patch.object(h.urllib.request, "urlopen", return_value=response), \
-                mock.patch.object(h, "workshop_details", return_value=details):
+                mock.patch.object(h, "workshop_details", side_effect=details):
             return h.id_from_search(title)
+
+    def test_search_finds_the_newest_mods_too(self):
+        # a search page lists 30 items, best match first. Sorted by ID and cut to 20, the newest items (the highest
+        # IDs) were never looked at: "HugeGrass Rebalance", the search's own first result, was "not on Steam Workshop"
+        found = {"3820687243": "HugeGrass Rebalance", **{str(2899089905 + n): f"Huge Map {n}" for n in range(29)}}
+        h = self.load()
+        self.assertEqual(self.search(h, "HugeGrass Rebalance", found), "3820687243")
 
     def test_search_never_settles_for_a_different_mod(self):
         # "Halo 2 Spartan (characters)" (a character pack a server made) once fetched the 3 GB campaign mod
@@ -379,6 +389,50 @@ class HelperTest(unittest.TestCase):
                 mock.patch.object(h, "workshop_details", return_value=[self.details()]):
             h.watch()
         self.assertEqual(self.status(h)["state"], "ready")
+
+    def watch_asks(self, retry_after):
+        """The mods watch() fetches, and what it logs, when the first fetch fails and the game then asks again."""
+        h = self.load()
+        log = self.home / "logs" / "client.log"
+        line = "Mod Warlock not downloaded: Start Steam and sign in with an account that owns MCC to use Workshop\n"
+        log.write_text(line)
+        asked, failure_in, asked_again = [], threading.Event(), []
+
+        class Queue(queue.Queue):  # (says when the fetcher has handed back the failure)
+            def put(self, item, *args, **kwargs):
+                super().put(item, *args, **kwargs)
+                if isinstance(item, str):  # (the failed queue: jobs are (item, hint) pairs)
+                    failure_in.set()
+
+        def fetch(item, hint):
+            asked.append(item)
+            return len(asked) > 1
+        passes = itertools.count()
+
+        def game_running():  # (called first in each pass, before the failures are read)
+            if failure_in.is_set() and not asked_again:  # the player presses Try Again: the game asks again
+                asked_again.append(True)
+                with log.open("a") as f:
+                    f.write(line)
+            return next(passes) < 20  # (the game runs for 20 passes of 0.05 s; the helper stops 0.5 s later)
+        with mock.patch.object(h, "LOG", log), mock.patch.object(h, "notify"), mock.patch.object(h, "log") as said, \
+                mock.patch.object(h.queue, "Queue", Queue), mock.patch.object(h, "fetch", side_effect=fetch), \
+                mock.patch.object(h, "game_running", side_effect=game_running), \
+                mock.patch.object(h, "POLL", 0.05), mock.patch.object(h, "GAME_GRACE", 0.5), \
+                mock.patch.object(h, "RETRY_AFTER", retry_after):
+            h.watch()
+        self.assertTrue(asked_again, "the fetcher never handed back the failure")
+        return asked, [c.args[0] for c in said.call_args_list]
+
+    def test_a_mod_whose_fetch_failed_is_fetched_again_when_the_game_asks_again(self):
+        # one failure (a search that missed it, Steam briefly unreachable) used to leave the mod missing for the rest
+        # of the session, however often the player pressed Try Again
+        self.assertEqual(self.watch_asks(retry_after=0)[0], ["Warlock", "Warlock"])
+
+    def test_an_ask_right_after_a_failed_fetch_waits_for_the_next_one_and_says_so(self):
+        asked, said = self.watch_asks(retry_after=60)
+        self.assertEqual(asked, ["Warlock"])
+        self.assertTrue(any("Warlock" in s and "failed try" in s for s in said), said)
 
     def test_another_installs_game_is_not_this_helpers_game(self):
         # the helper matches through game_process.py too: its rule is the install's own folder, so a game another

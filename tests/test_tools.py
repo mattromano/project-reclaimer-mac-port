@@ -257,6 +257,15 @@ class ToolsTest(unittest.TestCase):
         self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: The graphics card stopped"))
         log.write_text("thread 'main' panicked at src/thing.rs:1:2:\nboom\n")
         self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: Project Reclaimer hit an error"))
+        # the engine crashing in the lobby after a match (the window used to close as if the player had quit)
+        log.write_text("Retail memorial camera started: script 43, kind 1.\n"
+                       "Experimental startup exception 0xC0000005 in halo3.dll at RVA 0x1C4AB1\n"
+                       "Access kind 0 (0=read, 1=write, 8=execute); null target: false; low-address target: true\n"
+                       "Error: Engine probe worker failed: exit code: 1\n")
+        self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: Halo 3's engine crashed"))
+        # the game prints this for any worker that ends badly, not only a crash: not reason enough to say one
+        log.write_text("Menu page: Lobby\nError: Engine probe worker failed: exit code: 1\n")
+        self.assertEqual(self.run_tool("crash-check")[1][-1], "ok")
 
     # ---- startup state (the watchdog) --------------------------------------------------------------------------
 

@@ -252,6 +252,12 @@ CRASHES = [
     (" panicked at ",
      "Project Reclaimer hit an error and closed. Press Play to start again. If it keeps happening, use "
      "Tools > Send a report."),
+    # the engine worker's fault handler ("Experimental startup exception 0xC0000005 in halo3.dll at RVA ...", seen in
+    # the lobby after a match). The window used to take it for an ordinary quit and close too, saying nothing. (Not
+    # the "Engine probe worker failed" line after it: the game prints that for any worker that ends badly.)
+    ("Experimental startup exception 0x",
+     "Halo 3's engine crashed, so the game closed. Press Play to start again. If it keeps happening, use "
+     "Tools > Send a report."),
 ]
 
 

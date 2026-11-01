@@ -6,6 +6,9 @@
   controller-check   "stuck" if macOS's game controller service is stuck (no app sees controllers until a restart)
   audio-check        where the Mac's sound goes, tab-separated: "ok <output>", "muted <output>", "virtual <output>"
                      or "headset <headphones> <output>" (the game keeps the output it starts with)
+  mic-check          the Mac's default microphone (voice chat uses it unless the game's settings pick another),
+                     tab-separated: "input <name> <bluetooth|virtual|other>"
+                     or "none" (no microphone)
   crash-check        "crash: <plain explanation>" if the last game log shows a crash, else "ok"
   startup-state      JSON: whether startup is progressing: "starting", "building", "ready", "stalled" or "stopped",
                      with the Forge cache's progress and the log markers behind that verdict
@@ -199,17 +202,25 @@ def controller_check():
     return "stuck"
 
 
-def output_devices():
-    """macOS's sound output devices: [(name, is the default output, transport)], or [] when it can't tell."""
+def audio_devices(kind):
+    """macOS's sound devices of one kind, "output" or "input": [(name, is the default, transport)], or None when it
+    can't tell."""
     try:
         out = subprocess.run(["/usr/sbin/system_profiler", "SPAudioDataType", "-json"], capture_output=True,
                              text=True, timeout=20).stdout
         items = [d for group in json.loads(out).get("SPAudioDataType", []) for d in group.get("_items", [])]
     except (OSError, ValueError, subprocess.SubprocessError):
-        return []
-    return [(" ".join(str(d.get("_name", "")).split()), d.get("coreaudio_default_audio_output_device") == "spaudio_yes",
-             d.get("coreaudio_device_transport", ""))
-            for d in items if d.get("coreaudio_device_output")]
+        return None
+    if not items:  # (every Mac has a speaker at least: no devices at all means no answer, not no microphone)
+        return None
+    return [(" ".join(str(d.get("_name", "")).split()),
+             d.get(f"coreaudio_default_audio_{kind}_device") == "spaudio_yes", d.get("coreaudio_device_transport", ""))
+            for d in items if d.get(f"coreaudio_device_{kind}")]
+
+
+def output_devices():
+    """macOS's sound output devices: [(name, is the default output, transport)], or [] when it can't tell."""
+    return audio_devices("output") or []
 
 
 def output_muted():
@@ -241,6 +252,24 @@ def audio_check():
     if headset:
         return f"headset\t{headset}\t{output}"
     return f"ok\t{output}"
+
+
+def mic_check():
+    """macOS's default input: the microphone voice chat uses unless the player picked another in the game's own
+    settings (Settings > Communication). Tab-separated, since device names have spaces: "input <name>
+    <bluetooth|virtual|other>" (Bluetooth headphones' microphone puts them in call mode, so game sound gets flatter; a
+    virtual device, e.g. a meeting app's, may have no microphone behind it), "none" when the Mac has no microphone, or
+    plain "ok" when macOS can't tell."""
+    devices = audio_devices("input")
+    if devices is None:
+        return "ok"
+    if not devices:
+        return "none"
+    name, transport = next(((n, t) for n, is_default, t in devices if is_default), (None, ""))
+    if not name:
+        return "ok"
+    kind = "bluetooth" if "bluetooth" in transport else "virtual" if "virtual" in transport else "other"
+    return f"input\t{name}\t{kind}"
 
 
 CRASHES = [
@@ -729,7 +758,8 @@ def uninstall():
 
 
 COMMANDS = {"net-check": net_check, "net-fix": net_fix, "controller-check": controller_check,
-            "audio-check": audio_check, "crash-check": crash_check, "startup-state": startup_state,
+            "audio-check": audio_check, "mic-check": mic_check, "crash-check": crash_check,
+            "startup-state": startup_state,
             "force-quit": force_quit, "mods": mods,
             "report": report, "reset-graphics": reset_graphics, "forget-steam": forget_steam, "repair": repair,
             "games": games, "uninstall": uninstall}

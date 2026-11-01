@@ -37,6 +37,62 @@ enum SoundEvent: Equatable {
     }
 }
 
+/// One line from `tools.py mic-check`: the microphone voice chat will use (tab-separated, as device names have
+/// spaces). kind: "bluetooth", "virtual" or "other".
+enum MicEvent: Equatable {
+    case input(String, kind: String), noMicrophone, other
+
+    init(line: String) {
+        let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        switch (parts[0], parts.count) {
+        case ("input", 3): self = .input(parts[1], kind: parts[2])
+        case ("none", 1): self = .noMicrophone
+        default: self = .other
+        }
+    }
+}
+
+/// What macOS lets this app do with the microphone, and so the game it starts (macOS counts the game as this app).
+/// restricted: Screen Time or a management profile says no, which Privacy & Security can't change. unanswered: macOS
+/// answered the question but recorded no decision.
+enum MicAccess: Equatable { case asking, allowed, denied, restricted, unanswered }
+
+/// The Microphone line before Play: the Mac's default input, which the game uses unless the player picked another in
+/// its own settings, and how to talk. Voice chat is push-to-talk, so a player who never found the keys, or plays on a
+/// controller with no talk button set, is never heard; and macOS's "no" reaches the game as silence, not as an error.
+/// warning: other players won't hear you.
+func micNote(access: MicAccess, event: MicEvent) -> (text: String, warning: Bool) {
+    let keys = "Hold V to talk to everyone, B to your team, N to players nearby, where the server allows it. On a "
+        + "controller, set a Push to talk button in the game's Settings > Controller."
+    switch (access, event) {
+    case (.asking, _):
+        return ("macOS is asking whether voice chat may use your microphone: click Allow before you press Play.", false)
+    case (.denied, _):
+        return ("macOS isn't letting Project Reclaimer use your microphone, so other players can't hear you. Turn on "
+                + "Project Reclaimer in System Settings > Privacy & Security > Microphone, then press Play.", true)
+    case (.restricted, _):
+        return ("This Mac's settings (Screen Time or a management profile) don't let apps use the microphone, so "
+                + "other players can't hear you.", true)
+    case (.unanswered, _):
+        return ("macOS didn't record an answer about the microphone, so other players may not hear you. Quit Project "
+                + "Reclaimer and open it again to be asked again.", true)
+    case (.allowed, .input(let name, "bluetooth")):
+        return ("\(name). \(keys) On a server the game keeps the microphone on, which puts headphones in call mode and "
+                + "flattens game sound: for full sound, pick another microphone (your Mac's own, if it has one) in "
+                + "System Settings > Sound > Input before you press Play.", false)
+    case (.allowed, .input(let name, "virtual")):
+        return ("\(name), a virtual device (e.g. a meeting or streaming app's): if no microphone feeds it, other "
+                + "players hear nothing. \(keys)", false)
+    case (.allowed, .input(let name, _)):
+        return ("\(name). \(keys)", false)
+    case (.allowed, .noMicrophone):
+        return ("None connected, so other players can't hear you (you still hear them). Connect one before you press "
+                + "Play.", true)
+    case (.allowed, .other):
+        return (keys, false)
+    }
+}
+
 /// One line from `workshop_helper.py login-check` or `login-qr`.
 enum SteamEvent: Equatable {
     case qrBegin, qrRow(String), qrEnd, ok(account: String), needLogin, offline, error(String), other

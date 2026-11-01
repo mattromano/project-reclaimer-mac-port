@@ -1,5 +1,6 @@
 // The launcher window's state: updates, Steam sign-in, mods, Play, and what happens around the game.
 import AppKit
+import AVFoundation
 import SwiftUI
 import UserNotifications
 
@@ -61,6 +62,10 @@ final class Launcher: ObservableObject {
     /// Where the Mac's sound goes: the game keeps that output once it starts, so it is shown (and warned about) before Play.
     // (logged without device names, which go into reports people send: "Chris AirPods Pro")
     @Published var sound: Step? { didSet { if sound != oldValue, let s = sound { log("sound: \(s.finished ? s.isWarning ? "warning" : "ok" : "checking")") } } }
+    /// Which microphone voice chat will use and how to talk, or that macOS doesn't let the game use one (logged
+    /// without device names, as sound is).
+    @Published var mic: Step? { didSet { if mic != oldValue, let s = mic { log("microphone: \(s.finished ? s.isWarning ? "warning" : "ok" : "checking")") } } }
+    @Published var micDenied = false  // the window offers to open Privacy & Security > Microphone
     /// fit.py's tier says this Mac is below the recommended memory: what the first start will do, said before Play.
     /// nil on a standard Mac, and when fit.py couldn't answer at all.
     @Published var memoryNotice: String? { didSet { if memoryNotice != oldValue, let n = memoryNotice { log("memory notice: \(n)") } } }
@@ -122,7 +127,10 @@ final class Launcher: ObservableObject {
     private var didStart = false
 
     var steamReady: Bool { if case .done = steam { return true }; if case .warning = steam { return true }; return false }
-    var ready: Bool { update.finished && steamReady && !playing && network?.finished != false }
+    // (mic: macOS's microphone question is open, and a game starting now would cover it; Install Halo 3 starts none)
+    var ready: Bool {
+        update.finished && steamReady && !playing && network?.finished != false && (halo3Missing || mic?.finished != false)
+    }
 
     var logging = true
 
@@ -179,6 +187,7 @@ final class Launcher: ObservableObject {
                     guard state == .license else {
                         runUpdate()  // (then the network check and Steam: never alongside an update's own network step)
                         checkSound()
+                        checkMic()
                         checkMachine()
                         return
                     }
@@ -201,6 +210,7 @@ final class Launcher: ObservableObject {
             needsLicense = false
             runUpdate()
             checkSound()
+            checkMic()
             checkMachine()
         }
     }
@@ -279,6 +289,65 @@ final class Launcher: ObservableObject {
         }, onExit: { [self] _ in checkingSound = false })
         checkingSound = check != nil
         keep(check)
+    }
+
+    /// macOS asks whether the game may use the microphone the first time the game opens it: behind the full-screen
+    /// game, where the question goes unseen, and until it's answered the game hears silence (its log still says the
+    /// microphone is ready). So the window asks first, and Play waits for the answer (a minute at most, see tick), and
+    /// it says which microphone the game will use and how to talk. Re-run every few seconds while waiting, like the
+    /// sound check: a setting changed meanwhile shows.
+    private var checkingMic = false
+    private var askedMic = false   // macOS's question, once a session: an answer it doesn't record can't start a loop
+    private var micAskedAt: Date?  // while the question is open
+    func checkMic() {
+        guard !checkingMic else { return }
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        micDenied = status == .denied
+        switch status {
+        case .authorized:
+            // (just answered: the question's line goes now, and with it the hold on Play, before mic-check names the
+            // microphone)
+            if mic?.finished == false { showMic(micNote(access: .allowed, event: .other)) }
+            var said = false
+            let check = python("tools.py", ["mic-check"], onLine: { [self] line in
+                said = true
+                showMic(micNote(access: .allowed, event: MicEvent(line: line)))
+            }, onExit: { [self] _ in
+                checkingMic = false
+                if !said { showMic(micNote(access: .allowed, event: .other)) }  // (the keys, at least)
+            })
+            checkingMic = check != nil
+            keep(check)
+        case .notDetermined:
+            // (asking without the Info.plist's reason gets the app killed: a bare binary outside an app bundle)
+            guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil else { return }
+            guard !askedMic else {  // macOS answered, but recorded no decision: say so, without holding Play
+                showMic(micNote(access: .unanswered, event: .other))
+                return
+            }
+            askedMic = true
+            checkingMic = true
+            micAskedAt = Date()
+            mic = .working(micNote(access: .asking, event: .other).text)
+            // (macOS calls back on any queue: Sendable, so the compiler holds this closure to the hop below)
+            AVCaptureDevice.requestAccess(for: .audio) { @Sendable _ in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self.checkingMic = false
+                        self.micAskedAt = nil
+                        self.checkMic()
+                    }
+                }
+            }
+        case .restricted:
+            showMic(micNote(access: .restricted, event: .other))
+        default:
+            showMic(micNote(access: .denied, event: .other))
+        }
+    }
+
+    private func showMic(_ note: (text: String, warning: Bool)) {
+        mic = note.warning ? .warning(note.text) : .done(note.text)
     }
 
     private func keep(_ p: LineProcess?) { if let p { running.append(p) } }
@@ -730,7 +799,12 @@ final class Launcher: ObservableObject {
     private func tick() {
         ticks += 1
         running.removeAll { !$0.isRunning }
-        if ticks % 10 == 0, !playing { checkSound() }  // headphones put in while the window waits
+        if ticks % 10 == 0, !playing { checkSound(); checkMic() }  // headphones put in while the window waits
+        // Play waits for macOS's microphone question, but not for a question left unanswered
+        if let asked = micAskedAt, Date().timeIntervalSince(asked) > 60 {
+            micAskedAt = nil
+            mic = .warning(micNote(access: .asking, event: .other).text)
+        }
         if let id = testGet, case .done = steam { testGet = nil; link = id; getMod() }
         if testAutoplay, ready { testAutoplay = false; play() }
         if testSwitch, let j = joinTrouble, j.serverVersion != nil, !j.asking { testSwitch = false; switchAndRejoin() }

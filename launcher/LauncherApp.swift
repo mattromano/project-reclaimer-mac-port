@@ -359,6 +359,21 @@ func renderStates(to dir: URL) {
             $0.sound = .done("MacBook Pro Speakers. To hear the game in AirPods Pro instead, pick it in the Sound menu "
                              + "before you press Play: the game keeps the sound output it starts with.")
         }),
+        ("17-mic-airpods", {
+            $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")
+            $0.sound = .done("AirPods Pro")
+            $0.mic = .done(micNote(access: .allowed, event: .input("AirPods Pro", kind: "bluetooth")).text)
+        }),
+        ("18-mic-denied", {
+            $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")
+            $0.sound = .done("MacBook Pro Speakers")
+            $0.mic = .warning(micNote(access: .denied, event: .other).text); $0.micDenied = true
+        }),
+        ("19-mic-asking", {  // (Play waits for the answer)
+            $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")
+            $0.sound = .done("MacBook Pro Speakers")
+            $0.mic = .working(micNote(access: .asking, event: .other).text)
+        }),
         ("8-bad-link", {
             $0.update = .done("Up to date"); $0.steam = .done("Signed in as player123")
             $0.link = "Warlock"; $0.linkError = "Paste a Steam Workshop link (it has “?id=” in it)."

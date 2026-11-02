@@ -3,6 +3,7 @@
 Run: /usr/bin/python3 -I -m unittest discover -s tests
 """
 import importlib.util
+import itertools
 import json
 import queue
 import threading
@@ -253,14 +254,23 @@ class HelperTest(unittest.TestCase):
         self.assertEqual((final["title"], final["percent"], final["bytes_total"]), ("Warlock", 100.0, 1600000000))
 
     def search(self, h, title, found):
-        """id_from_search(title) when the Workshop search page lists `found` ({id: title})."""
+        """id_from_search(title) when the Workshop search page lists `found` ({id: title}, in the page's order)."""
         page = " ".join(f'<a href="https://steamcommunity.com/sharedfiles/filedetails/?id={i}">' for i in found)
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = page.encode()
-        details = [{"publishedfileid": i, "title": t} for i, t in found.items()]
+
+        def details(ids):  # (only the items asked about, as Steam's API answers)
+            return [{"publishedfileid": i, "title": found[i]} for i in ids if i in found]
         with mock.patch.object(h.urllib.request, "urlopen", return_value=response), \
-                mock.patch.object(h, "workshop_details", return_value=details):
+                mock.patch.object(h, "workshop_details", side_effect=details):
             return h.id_from_search(title)
+
+    def test_search_finds_the_newest_mods_too(self):
+        # a search page lists 30 items, best match first. Sorted by ID and cut to 20, the newest items (the highest
+        # IDs) were never looked at: "HugeGrass Rebalance", the search's own first result, was "not on Steam Workshop"
+        found = {"3820687243": "HugeGrass Rebalance", **{str(2899089905 + n): f"Huge Map {n}" for n in range(29)}}
+        h = self.load()
+        self.assertEqual(self.search(h, "HugeGrass Rebalance", found), "3820687243")
 
     def test_search_never_settles_for_a_different_mod(self):
         # "Halo 2 Spartan (characters)" (a character pack a server made) once fetched the 3 GB campaign mod
@@ -286,6 +296,111 @@ class HelperTest(unittest.TestCase):
                 mock.patch.object(h, "game_running", return_value=False):
             h.watch()
         self.assertEqual([c.args[0] for c in fetch.call_args_list], ["Warlock"])  # (an ordinary mod still is)
+
+    def test_a_mod_the_game_could_not_update_is_fetched_by_its_id(self):
+        # 0.9.23 brings an installed mod to Steam's newest version itself, and names it by ID when that fails (no
+        # Steam client): the helper didn't know the line, so an outdated mod kept the player out of the server
+        log = self.home / "logs" / "client.log"
+        log.write_text("Updating Workshop item 111\n"  # (another ID: matching this line would show as a fetch of 111)
+                       "Workshop item 2898955198 not updated: Start Steam and sign in with an account that owns MCC to "
+                       "use Workshop\n")
+        h = self.load()
+        with mock.patch.object(h, "GAME_GRACE", 0.1), mock.patch.object(h, "fetch") as fetch, \
+                mock.patch.object(h, "game_running", return_value=False):
+            h.watch()
+        self.assertEqual([c.args for c in fetch.call_args_list],
+                         [("2898955198", "Press Try Again in the game.", h.NEWEST_ALREADY)])
+
+    def installed(self, h, timeupdated, manifest="999"):
+        """A finished copy of item 123 in Steam's Workshop folder: the Workshop version updated at timeupdated."""
+        (h.WORKSHOP / "123").mkdir(parents=True, exist_ok=True)
+        (h.WORKSHOP / "123" / "ModInfo.json").write_text("{}")
+        (h.WORKSHOP / "123" / h.DONE).write_text(json.dumps({"timeupdated": timeupdated, "manifest": manifest}))
+
+    def test_an_update_ask_for_a_copy_that_is_steams_newest_says_so(self):
+        # then the server has another version, and only its host can fix that: "Press Try Again" would send the
+        # player round the same failure
+        self.fake(["should not run"])
+        h = self.load()
+        self.installed(h, 1700000000)  # (what details() says Steam has)
+        with mock.patch.object(h, "workshop_details", return_value=[self.details()]), \
+                mock.patch.object(h, "notify") as notify:
+            self.assertTrue(h.fetch("123", "Press Try Again in the game.", h.NEWEST_ALREADY))
+        self.assertEqual((self.status(h)["state"], self.status(h)["hint"]), ("ready", h.NEWEST_ALREADY))
+        self.assertEqual(self.depot_runs(), [])
+        self.assertIn(h.NEWEST_ALREADY, notify.call_args.args[0])  # (and says so where the player is)
+
+    def test_an_update_ask_for_an_outdated_copy_downloads_steams_newest(self):
+        (self.home / "steam-account").write_text("RealName_1\n")
+        self.fake(["100.00% ModInfo.json"], modinfo=True)
+        h = self.load()
+        self.installed(h, 1600000000, manifest="998")  # (older than Steam's)
+        with mock.patch.object(h, "workshop_details", return_value=[self.details()]), mock.patch.object(h, "notify"):
+            self.assertTrue(h.fetch("123", "Press Try Again in the game.", h.NEWEST_ALREADY))
+        self.assertEqual((self.status(h)["state"], self.status(h)["hint"]), ("ready", "Press Try Again in the game."))
+        self.assertEqual(len(self.depot_runs()), 1)
+        self.assertEqual(h.installed_version("123")["timeupdated"], 1700000000)
+
+    def hint_after_waiting(self, other_downloads):
+        """The hint an update ask leaves when it has to wait for another holder of the mod's lock (a sign-in retry
+        or a pasted link): one that downloads Steam's newest meanwhile, or one that only checks."""
+        self.fake(["should not run"])
+        h = self.load()
+        if other_downloads:
+            self.installed(h, 1600000000, manifest="998")  # (the copy the game asked about is outdated)
+        else:
+            self.installed(h, 1700000000)  # (Steam's newest already)
+        h.STATUS_DIR.mkdir(parents=True, exist_ok=True)
+        other = open(h.STATUS_DIR / ".123.lock", "w")
+        h.fcntl.flock(other, h.fcntl.LOCK_EX)
+        waiting, real_flock = threading.Event(), h.fcntl.flock
+
+        def flock(f, op):
+            waiting.set()  # (fetch has seen the copy it was asked about, and now waits)
+            return real_flock(f, op)
+        with mock.patch.object(h, "workshop_details", return_value=[self.details()]), mock.patch.object(h, "notify"), \
+                mock.patch.object(h.fcntl, "flock", side_effect=flock):
+            t = threading.Thread(target=h.fetch, args=("123", "Press Try Again in the game.", h.NEWEST_ALREADY))
+            t.start()
+            self.assertTrue(waiting.wait(5), "fetch never waited for the other holder")
+            if other_downloads:
+                self.installed(h, 1700000000)  # (its download puts Steam's newest in place)
+            other.close()
+            t.join(5)
+        return self.status(h)["hint"]
+
+    def test_a_copy_another_download_just_brought_is_not_called_already_newest(self):
+        # once that download ends, the copy is Steam's newest because of it: the game asked about the old copy, so
+        # the next Try Again may well join, and "the server has another version" would be wrong
+        self.assertEqual(self.hint_after_waiting(other_downloads=True), "Press Try Again in the game.")
+
+    def test_waiting_on_a_quick_check_keeps_the_already_newest_note(self):
+        h = self.load()
+        self.assertEqual(self.hint_after_waiting(other_downloads=False), h.NEWEST_ALREADY)
+
+    def fetched(self, h, fetch, job):
+        """What fetcher() hands back for the game to ask again after one job, with fetch(item, *hints) standing in."""
+        jobs, again = queue.Queue(), queue.Queue()
+        with mock.patch.object(h, "fetch", side_effect=fetch), mock.patch.object(h, "notify"):
+            threading.Thread(target=h.fetcher, args=(jobs, again), daemon=True).start()
+            jobs.put(job)
+            jobs.join()
+        return [again.get_nowait() for _ in range(again.qsize())]
+
+    def test_after_an_update_download_the_game_may_ask_again(self):
+        # the game also asks when its copy is Steam's newest but not the server's version: after the helper's own
+        # download, the next ask has to be answered (it then finds Steam's newest and says so), not dropped as done
+        h = self.load()
+        self.installed(h, 1600000000, manifest="998")
+        update = ("123", "Press Try Again in the game.", h.NEWEST_ALREADY)
+
+        def download(item, *hints):
+            self.installed(h, 1700000000)
+            return True
+        self.assertEqual(self.fetched(h, download, update), ["123"])
+        self.assertEqual(self.fetched(h, lambda item, *hints: True, update), [])  # (already newest: nothing new)
+        self.assertEqual(self.fetched(h, lambda item, *hints: False, update), ["123"])  # (failed)
+        self.assertEqual(self.fetched(h, lambda item, *hints: True, ("Warlock", "Press Try Again in the game.")), [])
 
     def test_workshop_ids_are_digits_only(self):
         # a ModInfo.json from a server names its own SteamWorkshopId; "123/../../x" went into folder paths
@@ -379,6 +494,50 @@ class HelperTest(unittest.TestCase):
                 mock.patch.object(h, "workshop_details", return_value=[self.details()]):
             h.watch()
         self.assertEqual(self.status(h)["state"], "ready")
+
+    def watch_asks(self, retry_after):
+        """The mods watch() fetches, and what it logs, when the first fetch fails and the game then asks again."""
+        h = self.load()
+        log = self.home / "logs" / "client.log"
+        line = "Mod Warlock not downloaded: Start Steam and sign in with an account that owns MCC to use Workshop\n"
+        log.write_text(line)
+        asked, failure_in, asked_again = [], threading.Event(), []
+
+        class Queue(queue.Queue):  # (says when the fetcher has handed the mod back)
+            def put(self, item, *args, **kwargs):
+                super().put(item, *args, **kwargs)
+                if isinstance(item, str):  # (the again queue: jobs are tuples)
+                    failure_in.set()
+
+        def fetch(item, hint):
+            asked.append(item)
+            return len(asked) > 1
+        passes = itertools.count()
+
+        def game_running():  # (called first in each pass, before the failures are read)
+            if failure_in.is_set() and not asked_again:  # the player presses Try Again: the game asks again
+                asked_again.append(True)
+                with log.open("a") as f:
+                    f.write(line)
+            return next(passes) < 20  # (the game runs for 20 passes of 0.05 s; the helper stops 0.5 s later)
+        with mock.patch.object(h, "LOG", log), mock.patch.object(h, "notify"), mock.patch.object(h, "log") as said, \
+                mock.patch.object(h.queue, "Queue", Queue), mock.patch.object(h, "fetch", side_effect=fetch), \
+                mock.patch.object(h, "game_running", side_effect=game_running), \
+                mock.patch.object(h, "POLL", 0.05), mock.patch.object(h, "GAME_GRACE", 0.5), \
+                mock.patch.object(h, "RETRY_AFTER", retry_after):
+            h.watch()
+        self.assertTrue(asked_again, "the fetcher never handed back the failure")
+        return asked, [c.args[0] for c in said.call_args_list]
+
+    def test_a_mod_whose_fetch_failed_is_fetched_again_when_the_game_asks_again(self):
+        # one failure (a search that missed it, Steam briefly unreachable) used to leave the mod missing for the rest
+        # of the session, however often the player pressed Try Again
+        self.assertEqual(self.watch_asks(retry_after=0)[0], ["Warlock", "Warlock"])
+
+    def test_an_ask_right_after_a_failed_fetch_waits_for_the_next_one_and_says_so(self):
+        asked, said = self.watch_asks(retry_after=60)
+        self.assertEqual(asked, ["Warlock"])
+        self.assertTrue(any("Warlock" in s and "asked again" in s for s in said), said)
 
     def test_another_installs_game_is_not_this_helpers_game(self):
         # the helper matches through game_process.py too: its rule is the install's own folder, so a game another

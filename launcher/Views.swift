@@ -218,6 +218,10 @@ struct HelpPanel: View {
          "Start the game again. If it keeps happening, lower Settings > Render resolution in the game."),
         ("No sound, or sound from the wrong speakers",
          "The game keeps the sound output your Mac had when you pressed Play, so headphones put in afterwards stay silent, and so does a muted output. This window's Sound line shows where the sound goes: pick the output you want in the Sound menu (and un-mute it) before Play. Already playing? Switch your Mac's sound back to the output the game started with, or quit and press Play again."),
+        ("Other players can't hear you",
+         "Voice chat is push-to-talk: hold V to talk to everyone, B to your team, N to living players nearby, or press once to start and again to stop with Settings > Communication > Talk mode on Toggle (change the keys in Settings > Keyboard & mouse). Each server chooses which of these work: on some, only N does, and only while you're alive in a game. On a controller, give Push to talk a button in Settings > Controller first. In Settings > Communication, check that Voice chat is on and Microphone isn't Off. This window's Microphone line shows your Mac's default microphone, which the game uses unless you picked another there, and warns when macOS doesn't let the game use one."),
+        ("Game sound turns flat in AirPods or other Bluetooth headphones",
+         "That's their call mode: they switch to it while their microphone is in use, and on a server the game keeps the microphone on, talking or not. For full sound, keep the headphones as the output but pick another microphone (your Mac's own, if it has one) in System Settings > Sound > Input before you press Play."),
     ]
 
     var body: some View {
@@ -276,6 +280,18 @@ struct ContentView: View {
                 if let sound = m.sound {
                     Divider()
                     StepRow(title: "Sound", step: sound)
+                }
+                if let mic = m.mic {
+                    Divider()
+                    StepRow(title: "Microphone", step: mic)
+                    if m.micDenied {
+                        Button("Open Microphone settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .padding(.leading, 34)
+                    }
                 }
                 if m.signingIn { SignInCard(qr: m.qr, onSkip: m.skipSteam) }
                 if m.steamSlow {

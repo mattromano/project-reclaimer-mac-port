@@ -32,6 +32,33 @@ check(SoundEvent(line: "headset\tChris AirPods Pro\tMacBook Pro Speakers")
 check(SoundEvent(line: "ok") == .other, "sound unknown stays quiet")
 check(SoundEvent(line: "") == .other, "sound empty line")
 
+// microphone lines
+check(MicEvent(line: "input\tChris AirPods Pro\tbluetooth") == .input("Chris AirPods Pro", kind: "bluetooth"), "mic input")
+check(MicEvent(line: "none") == .noMicrophone, "no microphone")
+check(MicEvent(line: "ok") == .other, "mic unknown")
+check(MicEvent(line: "") == .other, "mic empty line")
+
+// the Microphone line: push-to-talk keys always, call mode for Bluetooth, and a warning whenever nobody will hear you
+let airpodsMic = micNote(access: .allowed, event: .input("Chris AirPods Pro", kind: "bluetooth"))
+check(airpodsMic.text.hasPrefix("Chris AirPods Pro. Hold V") && airpodsMic.text.contains("call mode")
+      && !airpodsMic.warning, "bluetooth mic: keys and call mode")
+let builtInMic = micNote(access: .allowed, event: .input("MacBook Pro Microphone", kind: "other"))
+check(builtInMic.text.contains("Hold V") && builtInMic.text.contains("where the server allows it")
+      && !builtInMic.text.contains("call mode") && !builtInMic.warning, "built-in mic: keys only")
+let virtualMic = micNote(access: .allowed, event: .input("ZoomAudioDevice", kind: "virtual"))
+check(virtualMic.text.contains("virtual device") && !virtualMic.warning, "virtual mic: a note (often on purpose)")
+check(micNote(access: .allowed, event: .other).text.hasPrefix("Hold V"), "mic unknown: the keys still")
+let noMic = micNote(access: .allowed, event: .noMicrophone)
+check(noMic.text.hasPrefix("None connected") && noMic.warning, "no microphone is a warning")
+let deniedMic = micNote(access: .denied, event: .input("MacBook Pro Microphone", kind: "other"))
+check(deniedMic.warning && deniedMic.text.contains("Privacy & Security > Microphone"), "macOS said no")
+let restrictedMic = micNote(access: .restricted, event: .other)
+check(restrictedMic.warning && !restrictedMic.text.contains("Privacy & Security"), "restricted: nothing to turn on")
+let askingMic = micNote(access: .asking, event: .other)
+check(!askingMic.warning && askingMic.text.contains("click Allow before you press Play"), "asking says what to do")
+let unansweredMic = micNote(access: .unanswered, event: .other)
+check(unansweredMic.warning && !unansweredMic.text.contains("click Allow"), "unanswered claims no open question")
+
 // QR grid from real DepotDownloader output (captured 2026-10-10 from DepotDownloader 3.4.0, 37 rows)
 let here = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let captured = (try? String(contentsOf: here.appendingPathComponent("qr-sample.txt"), encoding: .utf8)) ?? ""

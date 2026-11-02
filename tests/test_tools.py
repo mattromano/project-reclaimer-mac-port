@@ -164,6 +164,56 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(out[-1].split("\t")[0], ("ok", "muted", "virtual", "headset"))
 
+    # ---- microphone ----------------------------------------------------------------------------------------------
+    BUILT_IN_MIC = ("MacBook Pro Microphone", False, "coreaudio_device_type_builtin")
+    AIRPODS_MIC = ("Chris AirPods Pro", False, "coreaudio_device_type_bluetooth")
+    ZOOM_MIC = ("ZoomAudioDevice", False, "coreaudio_device_type_virtual")
+
+    def mic(self, devices, default=None):
+        t = self.load()
+        if devices is not None:
+            devices = [(n, n == default, tr) for n, _, tr in devices]
+        with mock.patch.object(t, "audio_devices", return_value=devices) as asked:
+            result = t.mic_check()
+        asked.assert_called_with("input")
+        return result
+
+    def test_mic_check_names_the_microphone_voice_chat_uses(self):
+        devices = [self.BUILT_IN_MIC, self.AIRPODS_MIC, self.ZOOM_MIC]
+        self.assertEqual(self.mic(devices, "MacBook Pro Microphone"), "input\tMacBook Pro Microphone\tother")
+        # AirPods as the microphone put them in call mode for the whole game: the window says so
+        self.assertEqual(self.mic(devices, "Chris AirPods Pro"), "input\tChris AirPods Pro\tbluetooth")
+        self.assertEqual(self.mic(devices, "ZoomAudioDevice"), "input\tZoomAudioDevice\tvirtual")
+
+    def test_mic_check_without_a_microphone_or_an_answer(self):
+        self.assertEqual(self.mic([]), "none")  # (a Mac mini or Mac Studio with nothing plugged in)
+        self.assertEqual(self.mic(None), "ok")
+        self.assertEqual(self.mic([self.BUILT_IN_MIC]), "ok")  # (no default input reported)
+
+    def test_audio_devices_reads_inputs_and_outputs(self):
+        t = self.load()
+        profile = json.dumps({"SPAudioDataType": [{"_items": [
+            {"_name": "MacBook Pro Microphone", "coreaudio_default_audio_input_device": "spaudio_yes",
+             "coreaudio_device_input": 1, "coreaudio_device_transport": "coreaudio_device_type_builtin"},
+            {"_name": "MacBook Pro Speakers", "coreaudio_default_audio_output_device": "spaudio_yes",
+             "coreaudio_device_output": 2, "coreaudio_device_transport": "coreaudio_device_type_builtin"},
+            {"_name": "Chris AirPods Pro", "coreaudio_device_input": 1, "coreaudio_device_output": 2,
+             "coreaudio_device_transport": "coreaudio_device_type_bluetooth"}]}]})
+        with mock.patch.object(t.subprocess, "run", return_value=mock.Mock(stdout=profile)):
+            self.assertEqual(t.audio_devices("input"),
+                             [("MacBook Pro Microphone", True, "coreaudio_device_type_builtin"), self.AIRPODS_MIC])
+            self.assertEqual(t.audio_devices("output"), [self.SPEAKERS, self.AIRPODS])
+        with mock.patch.object(t.subprocess, "run", side_effect=OSError):
+            self.assertIsNone(t.audio_devices("input"))
+        empty = json.dumps({"SPAudioDataType": []})  # (e.g. while coreaudiod restarts)
+        with mock.patch.object(t.subprocess, "run", return_value=mock.Mock(stdout=empty)):
+            self.assertIsNone(t.audio_devices("input"))
+
+    def test_mic_check_command(self):
+        rc, out = self.run_tool("mic-check")
+        self.assertEqual(rc, 0)
+        self.assertIn(out[-1].split("\t")[0], ("ok", "input", "none"))
+
     # ---- network -----------------------------------------------------------------------------------------------
     def test_net_check_needs_every_range(self):
         t = self.load()
@@ -257,6 +307,15 @@ class ToolsTest(unittest.TestCase):
         self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: The graphics card stopped"))
         log.write_text("thread 'main' panicked at src/thing.rs:1:2:\nboom\n")
         self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: Project Reclaimer hit an error"))
+        # the engine crashing in the lobby after a match (the window used to close as if the player had quit)
+        log.write_text("Retail memorial camera started: script 43, kind 1.\n"
+                       "Experimental startup exception 0xC0000005 in halo3.dll at RVA 0x1C4AB1\n"
+                       "Access kind 0 (0=read, 1=write, 8=execute); null target: false; low-address target: true\n"
+                       "Error: Engine probe worker failed: exit code: 1\n")
+        self.assertTrue(self.run_tool("crash-check")[1][-1].startswith("crash: Halo 3's engine crashed"))
+        # the game prints this for any worker that ends badly, not only a crash: not reason enough to say one
+        log.write_text("Menu page: Lobby\nError: Engine probe worker failed: exit code: 1\n")
+        self.assertEqual(self.run_tool("crash-check")[1][-1], "ok")
 
     # ---- startup state (the watchdog) --------------------------------------------------------------------------
 

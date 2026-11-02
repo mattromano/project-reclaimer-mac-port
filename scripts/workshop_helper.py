@@ -2,8 +2,9 @@
 """Fetch Steam Workshop mods for Project Reclaimer under Wine, without the Steam client.
 
 Watches Reclaimer's client log for mods it can't get from Steam Workshop (there is no Steam client under Wine):
-"Mod <title> not downloaded: ... Workshop" (Workshop-only mods), and "Workshop for <title> unavailable ... using the
-server" (the game falls back to downloading from the game servers, which cap mod sharing at ~2.5 MB/s each).
+"Mod <title> not downloaded: ... Workshop" (Workshop-only mods), "Workshop for <title> unavailable ... using the
+server" (the game falls back to downloading from the game servers, which cap mod sharing at ~2.5 MB/s each), and
+"Workshop item <id> not updated: ... Workshop" (a mod already here that the game wants at Steam's newest version).
 Resolves the Workshop item ID, downloads it with DepotDownloader (saved Steam login, Steam's CDN) into Steam's
 Workshop folder inside the Wine prefix, records it in Steam's Workshop manifest (appworkshop_976730.acf, which the
 game checks and only the Steam client normally writes), and posts a macOS notification. The player then presses
@@ -64,9 +65,18 @@ WORKSHOP = (BASE / "prefix-wine" / "drive_c" / "Program Files (x86)" / "Steam" /
 PROFILES = [d / "Documents" / "My Games" / "Project Reclaimer"
             for d in (BASE / "prefix-wine" / "drive_c" / "users").glob("*")]
 GAME_GRACE = 60  # seconds the game must be gone before the watching helper stops
+POLL = 2  # seconds between rescans of the client log
+# seconds after a failed fetch (or an update download) before the game asking for that mod again (Try Again, a
+# rejoin) fetches it again: the same join's other lines don't start a second try, and a player's Try Again comes later
+RETRY_AFTER = 3
 APP_ID = "976730"
 FAILED = re.compile(r"^Mod (.+?) not downloaded: .*Workshop")
 FALLBACK = re.compile(r"^Workshop for (.+?) unavailable: .*using the server")
+# a mod already here that the game tried to bring to Steam's newest version (0.9.23 names it by its Workshop ID)
+NOT_UPDATED = re.compile(r"^Workshop item ([0-9]+) not updated: .*Workshop")
+# ...and that is Steam's newest already: then the server has another version, which the game won't join with
+NEWEST_ALREADY = ("It's already Steam's newest version. If the game says the server has another version, only the "
+                  "server's host can update it.")
 # a pack a server made of one of its character mods (0.9.18+): not a Workshop item, the server shares it
 CHARACTER_PACK = re.compile(r" \(characters\)$")
 PROGRESS = re.compile(r"^\s*(\d+(?:\.\d+)?)% ")
@@ -333,6 +343,9 @@ def same_title(a, b):
     return re.sub(r"[^a-z0-9]+", " ", a.lower()).strip() == re.sub(r"[^a-z0-9]+", " ", b.lower()).strip()
 
 
+SEARCH_DETAILS = 50  # search results whose titles are checked (a search page lists 30)
+
+
 def id_from_search(title):
     """The MCC Workshop item with this title (case and punctuation aside); tolerates suffixes like ' - Beta'. Never a
     merely similar title: "Halo 2 Spartan" once fetched the unrelated "Halo 2 But Everyone is a Spartan"."""
@@ -340,10 +353,13 @@ def id_from_search(title):
     url = ("https://steamcommunity.com/workshop/browse/?appid=" + APP_ID
            + "&searchtext=" + urllib.parse.quote(base) + "&browsesort=textsearch")
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
-        ids = sorted(set(re.findall(r"filedetails/\?id=(\d+)", r.read().decode("utf-8", "replace"))))
+        page = r.read().decode("utf-8", "replace")
+    # in the page's order, which is the search's (best match first). Sorted by ID and cut to 20, a page of 30 results
+    # lost its newest items, the highest IDs: "HugeGrass Rebalance", the search's first result, was never found.
+    ids = list(dict.fromkeys(re.findall(r"filedetails/\?id=(\d+)", page)))
     if not ids:
         return None
-    details = workshop_details(ids[:20])
+    details = workshop_details(ids[:SEARCH_DETAILS])
     for wanted in (title, base):  # the full title first: "Foo - Remastered" over "Foo"
         for f in details:
             if same_title(f.get("title") or "", wanted):
@@ -373,6 +389,8 @@ def installed_version(wid):
         v = json.loads(marker.read_text())
         if isinstance(v, dict) and "timeupdated" in v:
             return v
+    except FileNotFoundError:  # (a download of it started meanwhile, which removes the marker first)
+        return None
     except ValueError:
         pass
     return {}  # finished before versions were recorded
@@ -501,7 +519,8 @@ def stop_on_exit(proc):
         signal.signal(signal.SIGTERM, lambda *_: (proc.kill(), sys.exit(1)))
 
 
-def fetch(item, ready_hint="Press Try Again in the game."):
+def fetch(item, ready_hint="Press Try Again in the game.", newest_hint=None):
+    """newest_hint: what the window says when the copy here is already Steam's newest (default: ready_hint)."""
     wid = resolve(item)
     if not valid_workshop_id(wid):
         notify(f"Could not find {item} on Steam Workshop.")
@@ -509,32 +528,45 @@ def fetch(item, ready_hint="Press Try Again in the game."):
     # one download per item: the in-game helper and a pasted link in the window may ask for the same mod
     STATUS_DIR.mkdir(parents=True, exist_ok=True)
     with open(STATUS_DIR / f".{wid}.lock", "w") as lock:
+        asked_about = installed_version(wid)
         fcntl.flock(lock, fcntl.LOCK_EX)  # waits for the other download, then finds the item up to date
-        return _fetch(wid, item, ready_hint)
+        if installed_version(wid) != asked_about:  # (another download replaced it meanwhile: not "already newest")
+            newest_hint = None
+        return _fetch(wid, item, ready_hint, newest_hint)
 
 
-def _fetch(wid, item, ready_hint):
+def _fetch(wid, item, ready_hint, newest_hint=None):
     details = next(iter(workshop_details([wid])), {})
     title = details.get("title") or item
     if up_to_date(wid, details):
         write_manifest()
         write_status(wid, title=title, state="ready", percent=100.0, bytes_total=int(details.get("file_size") or 0),
-                     hint=ready_hint)
+                     hint=newest_hint or ready_hint)
+        if newest_hint:
+            notify(f"{title}: {newest_hint}")
         return True
     if installed_version(wid) is not None:
         log(f"{title} has an update on Steam Workshop")
     return download(wid, title, details, ready_hint)
 
 
-def fetcher(jobs):
-    """One download at a time (DepotDownloader shares one saved login), off the log-watching loop."""
+def fetcher(jobs, again):
+    """One download at a time (DepotDownloader shares one saved login), off the log-watching loop. A mod goes back on
+    `again` when the game asking for it once more (Try Again, a rejoin) should be answered: its fetch failed, or an
+    update download just replaced it (if the game still can't join with it, the next ask finds Steam's newest and
+    says so)."""
     while True:
-        item, hint = jobs.get()
+        item, *hints = jobs.get()  # (the ready hint, and for an update, by Workshop ID, the already-newest one)
+        ok, replaced = False, False
         try:
-            fetch(item, hint)
+            before = installed_version(item) if len(hints) > 1 else None
+            ok = fetch(item, *hints)
+            replaced = len(hints) > 1 and installed_version(item) != before
         except Exception as e:  # keep going after network or parse errors
             notify(f"Could not download {item}: {e}")
         finally:
+            if not ok or replaced:
+                again.put(item)
             jobs.task_done()
 
 
@@ -556,7 +588,8 @@ def game_running():
 
 
 def watch():
-    """Rescan the client log every 2 s until the game exits; fetch each failed Workshop mod once."""
+    """Rescan the client log every POLL seconds until the game exits; fetch each Workshop mod the game couldn't get
+    (once, and again if the game asks again after that fetch failed)."""
     # a lock, not a process search: any command line that merely mentions this helper would match a search
     STATUS_DIR.mkdir(parents=True, exist_ok=True)
     lock = open(STATUS_DIR / ".watch.lock", "w")
@@ -571,13 +604,28 @@ def watch():
     except Exception as e:
         log(f"could not update the Workshop manifest: {e}")
     seen, pos, last_seen, joining = set(), 0, time.time(), None
-    jobs = queue.Queue()
-    threading.Thread(target=fetcher, args=(jobs,), daemon=True).start()
+    jobs, again, retry_at = queue.Queue(), queue.Queue(), {}
+    threading.Thread(target=fetcher, args=(jobs, again), daemon=True).start()
+
+    def wanted(title):
+        # each mod once, and again when the game asks after a failed fetch (or an update download): one failure used
+        # to leave a mod missing for the rest of the session, however often the player pressed Try Again
+        if title in seen:
+            return False
+        if time.time() < retry_at.get(title, 0):
+            log(f"game asked again for {title} right after the last try; its next ask tries again")
+            return False
+        return True
+
     # keep going until the game has been gone for 60 s straight: one missed check (or Reclaimer restarting itself
     # after an update) used to stop the helper while the game was still running
     while time.time() - last_seen < GAME_GRACE:
         if game_running():
             last_seen = time.time()
+        while not again.empty():  # (only this loop takes from it)
+            title = again.get_nowait()
+            seen.discard(title)
+            retry_at[title] = time.time() + RETRY_AFTER
         try:
             size = LOG.stat().st_size
             if size < pos:  # log was truncated by a new game launch
@@ -605,17 +653,23 @@ def watch():
                     log(f"{m.group(1)} is a character pack the server shares; nothing to get from Steam")
                 continue
             m = FAILED.match(line)
-            if m and m.group(1) not in seen:
+            if m and wanted(m.group(1)):
                 seen.add(m.group(1))
                 log("game could not download Workshop mod: " + m.group(1))
                 jobs.put((m.group(1), "Press Try Again in the game."))
                 continue
             m = FALLBACK.match(line)
-            if m and m.group(1) not in seen:
+            if m and wanted(m.group(1)):
                 seen.add(m.group(1))
                 log("game is downloading Workshop mod from servers instead: " + m.group(1))
                 jobs.put((m.group(1), "If the game is still downloading it, leave and rejoin to use this copy."))
-        time.sleep(min(2, GAME_GRACE))
+                continue
+            m = NOT_UPDATED.match(line)
+            if m and wanted(m.group(1)):
+                seen.add(m.group(1))
+                log("game could not update Workshop mod " + m.group(1))
+                jobs.put((m.group(1), "Press Try Again in the game.", NEWEST_ALREADY))
+        time.sleep(min(POLL, GAME_GRACE))
     if jobs.unfinished_tasks:
         log("game exited; finishing mod downloads first")
     jobs.join()  # a download started in the game finishes, so the mod is ready next time

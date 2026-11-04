@@ -643,6 +643,9 @@ def game_env():
         env["SDL_GAMECONTROLLERCONFIG_FILE"] = db
     if (BASE / "nintendo-xbox-layout").is_file():
         env["SDL_GAMECONTROLLER_USE_BUTTON_LABELS"] = "0"
+    zero_file = GAME / "zero-centered-devices.txt"
+    if zero_file.is_file():
+        env["SDL_JOYSTICK_ZERO_CENTERED_DEVICES"] = f"@{zero_file}"
     return env
 
 

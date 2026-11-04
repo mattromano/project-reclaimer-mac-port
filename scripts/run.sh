@@ -40,6 +40,7 @@ if [ -f "$BASE/controller-mappings.txt" ]; then
 fi
 [ -s "$DB" ] && export SDL_GAMECONTROLLERCONFIG_FILE="$DB"
 [ -f "$BASE/nintendo-xbox-layout" ] && export SDL_GAMECONTROLLER_USE_BUTTON_LABELS=0
+[ -f "$BASE/game/zero-centered-devices.txt" ] && export SDL_JOYSTICK_ZERO_CENTERED_DEVICES="@$BASE/game/zero-centered-devices.txt"
 
 cd "$BASE/game" || exit 1
 # an older release the player chose for servers that haven't updated (Tools > Game version), started from its own

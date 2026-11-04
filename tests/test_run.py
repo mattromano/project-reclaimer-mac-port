@@ -25,7 +25,7 @@ class RunTest(unittest.TestCase):
             (game / exe).write_bytes(b"MZ")
         wine = self.home / "wine" / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "bin" / "wine"
         wine.parent.mkdir(parents=True)
-        wine.write_text('#!/bin/sh\necho "cwd=$(pwd) exe=$1 mode=$2 cfgfile=$SDL_GAMECONTROLLERCONFIG_FILE cfgstr=$SDL_GAMECONTROLLERCONFIG labels=$SDL_GAMECONTROLLER_USE_BUTTON_LABELS"\n')
+        wine.write_text('#!/bin/sh\necho "cwd=$(pwd) exe=$1 mode=$2 cfgfile=$SDL_GAMECONTROLLERCONFIG_FILE cfgstr=$SDL_GAMECONTROLLERCONFIG labels=$SDL_GAMECONTROLLER_USE_BUTTON_LABELS zero=$SDL_JOYSTICK_ZERO_CENTERED_DEVICES"\n')
         wine.chmod(0o755)
 
     def tearDown(self):
@@ -101,6 +101,16 @@ class RunTest(unittest.TestCase):
         out = self.run_game()
         self.assertIn("labels=", out)
         self.assertNotIn("labels=0", out)
+
+    def test_zero_centered_devices_sets_env_when_file_present(self):
+        (self.home / "game" / "zero-centered-devices.txt").write_text("0x2DC8/0x202F\n")
+        out = self.run_game()
+        self.assertIn(f"zero=@{self.home}/game/zero-centered-devices.txt", out)
+
+    def test_zero_centered_devices_unset_when_file_missing(self):
+        out = self.run_game()
+        self.assertIn("zero=", out)
+        self.assertNotIn("zero=@", out)
 
 
 class LaunchTest(unittest.TestCase):

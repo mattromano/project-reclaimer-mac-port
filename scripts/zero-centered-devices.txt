@@ -1,0 +1,3 @@
+# USB VendorID/ProductID pairs of Bluetooth controllers that idle without initial motion reports.
+# Tells SDL2 to assume axes are centered at zero immediately on connection without waiting for first packet.
+0x2DC8/0x202F

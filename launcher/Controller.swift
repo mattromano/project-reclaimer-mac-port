@@ -24,6 +24,7 @@ struct ControllerDevice: Identifiable, Equatable {
     let versionNumber: Int
     let guid: String
     let axes: [AxisID]  // the pad's axes in SDL's order (read once: element lookups are slow)
+    let serial: String
 
     var isNintendo: Bool { vendorId == 0x057E }
     var isXbox: Bool { vendorId == 0x045E }
@@ -39,23 +40,14 @@ struct ControllerDevice: Identifiable, Equatable {
 @MainActor
 final class ControllerManager: ObservableObject {
     @Published var devices: [ControllerDevice] = []
-    @Published var playerAssignments: [Int] = [0, 1, 2, 3]
-    @Published var selectedPlayerIndex: Int = 0 {
+    @Published var selectedDeviceIndex: Int = 0 {
         didSet { selectionChanged() }
     }
     @Published var pingingIndex: Int?
 
-    var currentDeviceIndex: Int {
-        if playerAssignments.indices.contains(selectedPlayerIndex) {
-            let devIdx = playerAssignments[selectedPlayerIndex]
-            if devices.indices.contains(devIdx) { return devIdx }
-        }
-        return devices.indices.contains(selectedPlayerIndex) ? selectedPlayerIndex : 0
-    }
-
     var currentDevice: ControllerDevice? {
-        guard devices.indices.contains(currentDeviceIndex) else { return nil }
-        return devices[currentDeviceIndex]
+        guard devices.indices.contains(selectedDeviceIndex) else { return nil }
+        return devices[selectedDeviceIndex]
     }
 
     // Live test states for the selected device
@@ -272,23 +264,22 @@ final class ControllerManager: ObservableObject {
             if vid == 0x057E && name == sdlMappingName(nil) { name = "Nintendo Switch Controller" }
             let guid = sdlWildcardGuid(vendorId: vid, productId: pid)
 
+            let ser = (IOHIDDeviceGetProperty(dev, "SerialNumber" as CFString) as? String) ?? ""
             let id = "\(vid)-\(pid)-\(idx)"
             found.append(ControllerDevice(id: id, device: dev, name: name,
                                           vendorId: vid, productId: pid,
                                           versionNumber: ver,
-                                          guid: guid, axes: axisList(of: dev)))
+                                          guid: guid, axes: axisList(of: dev),
+                                          serial: ser))
         }
 
+        found.sort { ($0.vendorId, $0.productId) < ($1.vendorId, $1.productId) }
         self.devices = found
-        var newAssignments: [Int] = []
-        for i in 0..<max(1, found.count) {
-            newAssignments.append(i < found.count ? i : 0)
-        }
-        self.playerAssignments = newAssignments
-        if selectedPlayerIndex >= found.count {
-            selectedPlayerIndex = max(0, found.count - 1)
+        if selectedDeviceIndex >= found.count {
+            selectedDeviceIndex = max(0, found.count - 1)
         }
         loadActiveMapping()
+        ensureActiveMappingsFile()
     }
 
     func selectionChanged() {
@@ -675,11 +666,10 @@ final class ControllerManager: ObservableObject {
         statusMessage = "Mapping saved for \(currentDevice?.name ?? "controller")!"
     }
 
-    func ping(playerIdx: Int) {
-        let devIdx = playerAssignments.indices.contains(playerIdx) ? playerAssignments[playerIdx] : playerIdx
+    func ping(devIdx: Int) {
         guard devices.indices.contains(devIdx) else { return }
         let dev = devices[devIdx]
-        pingingIndex = playerIdx
+        pingingIndex = devIdx
 
         Task.detached {
             if dev.vendorId == 0x2DC8 {
@@ -830,14 +820,21 @@ final class ControllerManager: ObservableObject {
         }
 
         // Refresh controller-mappings-active.txt so active mappings exist immediately for Wine
-        let activePath = baseDir.appendingPathComponent("controller-mappings-active.txt")
-        let bundledPath = baseDir.appendingPathComponent("game/gamecontrollerdb.txt")
-        var merged = (try? String(contentsOf: bundledPath, encoding: .utf8)) ?? ""
-        if let userText = try? String(contentsOf: userMappingsPath, encoding: .utf8) {
-            merged += (merged.isEmpty ? "" : "\n") + userText
-        }
-        if !merged.isEmpty {
-            try? merged.write(to: activePath, atomically: true, encoding: .utf8)
+        ensureActiveMappingsFile(force: true)
+    }
+
+    private func ensureActiveMappingsFile(force: Bool = false) {
+        let activePath = home.appendingPathComponent("controller-mappings-active.txt")
+        if force || !FileManager.default.fileExists(atPath: activePath.path) {
+            let bundledPath = home.appendingPathComponent("game/gamecontrollerdb.txt")
+            let userPath = home.appendingPathComponent("controller-mappings.txt")
+            var merged = (try? String(contentsOf: bundledPath, encoding: .utf8)) ?? ""
+            if let userText = try? String(contentsOf: userPath, encoding: .utf8) {
+                merged += (merged.isEmpty ? "" : "\n") + userText
+            }
+            if !merged.isEmpty {
+                try? merged.write(to: activePath, atomically: true, encoding: .utf8)
+            }
         }
     }
 }
@@ -955,54 +952,51 @@ struct ControllerSheet: View {
             }
 
             if !c.devices.isEmpty {
-                // Player Assignment Dropdowns with Ping Buttons
+                // Controllers in game hardware order
                 VStack(spacing: 8) {
-                    ForEach(0..<max(1, c.devices.count), id: \.self) { playerIdx in
+                    ForEach(c.devices.indices, id: \.self) { devIdx in
+                        let dev = c.devices[devIdx]
                         HStack(spacing: 12) {
-                            Text("Player \(playerIdx + 1)")
+                            Text("Controller \(devIdx + 1)")
                                 .font(.headline)
-                                .frame(width: 68, alignment: .leading)
+                                .frame(width: 95, alignment: .leading)
 
-                            Picker("", selection: bindingFor(playerIdx)) {
-                                ForEach(c.devices.indices, id: \.self) { devIdx in
-                                    Text(c.devices[devIdx].name).tag(devIdx)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(dev.name)
+                                .font(.body)
+                                .frame(maxWidth: .infinity, alignment: .leading)
 
-                            // Ping button with haptic buzz and visual ring pulse
+                            // Ping button with haptic buzz
                             Button {
-                                c.ping(playerIdx: playerIdx)
+                                c.ping(devIdx: devIdx)
                             } label: {
-                                Label(c.pingingIndex == playerIdx ? "Buzzing…" : "Ping",
+                                Label(c.pingingIndex == devIdx ? "Buzzing…" : "Ping",
                                       systemImage: "dot.radiowaves.left.and.right")
                             }
                             .controlSize(.regular)
                             .disabled(c.pingingIndex != nil)
-                            .help("Vibrate this controller to identify which physical gamepad is assigned to Player \(playerIdx + 1)")
+                            .help("Vibrate this controller to identify Controller \(devIdx + 1)")
 
                             // Radio selection to focus diagram
                             Button {
-                                c.selectedPlayerIndex = playerIdx
+                                c.selectedDeviceIndex = devIdx
                             } label: {
-                                Image(systemName: c.selectedPlayerIndex == playerIdx ? "checkmark.circle.fill" : "circle")
+                                Image(systemName: c.selectedDeviceIndex == devIdx ? "checkmark.circle.fill" : "circle")
                                     .font(.title3)
-                                    .foregroundStyle(c.selectedPlayerIndex == playerIdx ? accent : .secondary)
+                                    .foregroundStyle(c.selectedDeviceIndex == devIdx ? accent : .secondary)
                             }
                             .buttonStyle(.borderless)
-                            .help("Select this player to test inputs and calibrate below")
+                            .help("Select this controller to test inputs and calibrate below")
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(c.selectedPlayerIndex == playerIdx
+                                .fill(c.selectedDeviceIndex == devIdx
                                       ? accent.opacity(0.12)
                                       : Color(nsColor: .controlBackgroundColor))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(c.pingingIndex == playerIdx ? accent : Color.clear, lineWidth: 2)
+                                        .stroke(c.pingingIndex == devIdx ? accent : Color.clear, lineWidth: 2)
                                 )
                         )
                     }
@@ -1015,7 +1009,7 @@ struct ControllerSheet: View {
                             .font(.title3)
                             .foregroundStyle(accent)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(dev.name) (Player \(c.selectedPlayerIndex + 1))").font(.headline)
+                            Text("\(dev.name) (Controller \(c.selectedDeviceIndex + 1))").font(.headline)
                             HStack(spacing: 8) {
                                 Text(String(format: "VID: 0x%04X · PID: 0x%04X", dev.vendorId, dev.productId))
                                     .font(.caption).foregroundStyle(.secondary)
@@ -1180,7 +1174,7 @@ struct ControllerSheet: View {
                                         .fixedSize(horizontal: false, vertical: true)
                                 } else if dev.canRemap {
                                     Text("Controller Mapping").font(.subheadline.bold())
-                                    Text("Controls feel swapped or inverted? Run calibration for Player \(c.selectedPlayerIndex + 1).")
+                                    Text("Controls feel swapped or inverted? Run calibration for Controller \(c.selectedDeviceIndex + 1).")
                                         .font(.caption).foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                 } else {
@@ -1200,7 +1194,7 @@ struct ControllerSheet: View {
                                         .controlSize(.regular)
                                 }
                             } else if dev.canRemap {
-                                Button("Remap Player \(c.selectedPlayerIndex + 1)") { c.startCalibration() }
+                                Button("Remap Controller \(c.selectedDeviceIndex + 1)") { c.startCalibration() }
                                     .buttonStyle(.borderedProminent)
                                     .tint(accent)
                             } else {
@@ -1243,23 +1237,6 @@ struct ControllerSheet: View {
         .padding(18)
         .frame(width: 500)
         .onDisappear { c.stop() }
-    }
-
-    private func bindingFor(_ playerIdx: Int) -> Binding<Int> {
-        Binding<Int>(
-            get: {
-                if c.playerAssignments.indices.contains(playerIdx) {
-                    return c.playerAssignments[playerIdx]
-                }
-                return 0
-            },
-            set: { newDevIdx in
-                if c.playerAssignments.indices.contains(playerIdx) {
-                    c.playerAssignments[playerIdx] = newDevIdx
-                    c.selectionChanged()
-                }
-            }
-        )
     }
 
     private func buttonBadge(_ text: String, active: Bool, w: CGFloat = 26, h: CGFloat = 22, highlighted: Bool = false) -> some View {

@@ -229,6 +229,30 @@ class ToolsTest(unittest.TestCase):
         self.assertNotIn("install -o root", cmd)
         self.assertIn("launchctl bootstrap system", cmd)
 
+    def test_root_commands_run_with_a_clean_environment(self):
+        # (macOS's sudoers has no secure_path, and shasum is Perl: PATH or PERL5OPT from the player's environment
+        # must not reach a root shell)
+        t = self.load()
+        cmd = t.root_command('echo "[$PERL5OPT]$PATH" && printf \'%s\\n\' "it\'s"')
+        out = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True,
+                             env=dict(os.environ, PERL5OPT="-Mevil", PATH="/tmp/evil:/usr/bin:/bin")).stdout
+        self.assertEqual(out, "[]/usr/bin:/bin:/usr/sbin:/sbin\nit's\n")
+        with mock.patch.object(t, "DRYRUN", ""), mock.patch.object(t.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            t.as_admin("true", "test")
+        self.assertIn("/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin", run.call_args[0][0][-1])
+
+    def test_test_only_daemon_paths_are_ignored_outside_tests(self):
+        # (where root installs its startup task must not be steerable by an environment variable)
+        env = dict(self.env, RECLAIMER_TEST_DAEMON_DIR=str(self.tmp / "x"),
+                   RECLAIMER_TEST_DAEMON_PLIST=str(self.tmp / "y"), RECLAIMER_TOOLS_DRYRUN="")
+        with mock.patch.dict(os.environ, env, clear=True):
+            spec = importlib.util.spec_from_file_location("tools_live", self.home / "game" / "tools.py")
+            t = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(t)
+        self.assertEqual(t.DAEMON_DIR, "/Library/Application Support/ProjectReclaimer")
+        self.assertEqual(str(t.INSTALLED_PLIST), "/Library/LaunchDaemons/local.projectreclaimer.loopback.plist")
+
     def test_shipped_checksums_match_the_network_files(self):
         t = self.load()
         sha = lambda f: subprocess.run(["shasum", "-a", "256", str(REPO / "scripts" / f)], capture_output=True,
@@ -768,10 +792,12 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(out[-1], "ok")
         self.assertFalse([l for l in out if l.startswith("dry-run admin: ")])
 
-    def test_uninstall_says_so_when_the_password_box_was_cancelled(self):
+    def test_uninstall_removes_nothing_when_the_password_box_was_cancelled(self):
+        # the root startup task goes first: deleting the install before asking left it with no way to be removed
         rc, out = self.run_tool("uninstall", RECLAIMER_TOOLS_DRYRUN="cancel")
-        self.assertEqual(out[-1], "ok network-kept")
-        self.assertFalse(self.home.exists())
+        self.assertTrue(out[-1].startswith("error: "), out)
+        self.assertTrue(self.home.exists())
+        self.assertTrue((self.apps / "Project Reclaimer.app").exists())
 
     def test_uninstall_also_removes_the_old_metal_app(self):
         (self.apps / "Project Reclaimer Metal.app").mkdir()

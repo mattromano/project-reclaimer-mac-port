@@ -860,6 +860,58 @@ class ToolsTest(unittest.TestCase):
             env = tools.game_env()
             self.assertNotIn("SDL_GAMECONTROLLER_USE_BUTTON_LABELS", env)
 
+    def test_game_env_sets_zero_centered_devices_when_file_exists(self):
+        spec = importlib.util.spec_from_file_location("tools", str(self.home / "game" / "tools.py"))
+        tools = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"RECLAIMER_HOME": str(self.home)}):
+            spec.loader.exec_module(tools)
+            (tools.GAME / "zero-centered-devices.txt").write_text("0x2DC8/0x202F\n")
+            env = tools.game_env()
+            self.assertEqual(env.get("SDL_JOYSTICK_ZERO_CENTERED_DEVICES"), f"@{tools.GAME / 'zero-centered-devices.txt'}")
+
+    def test_game_env_leaves_zero_centered_devices_unset_when_file_missing(self):
+        spec = importlib.util.spec_from_file_location("tools", str(self.home / "game" / "tools.py"))
+        tools = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"RECLAIMER_HOME": str(self.home)}):
+            spec.loader.exec_module(tools)
+            (tools.GAME / "zero-centered-devices.txt").unlink(missing_ok=True)
+            env = tools.game_env()
+            self.assertNotIn("SDL_JOYSTICK_ZERO_CENTERED_DEVICES", env)
+
+    def test_wine_bundled_sdl_version_matches_rumble_bridge_pin(self):
+        """Ensure Wine's bundled SDL2 version matches the pinned version in rumble_bridge.c."""
+        import re
+
+        bridge_c = Path(__file__).resolve().parent.parent / "rumble" / "rumble_bridge.c"
+        m = re.search(r"ver\.major\s*==\s*(\d+)\s*&&\s*ver\.minor\s*==\s*(\d+)\s*&&\s*ver\.patch\s*==\s*(\d+)", bridge_c.read_text())
+        self.assertIsNotNone(m, "rumble_bridge.c must pin SDL version (major == X && minor == Y && patch == Z)")
+        pinned_version = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+        home = Path(os.environ.get("RECLAIMER_HOME", Path.home() / "Games" / "ProjectReclaimer"))
+        sdl_dylib = home / "wine" / "Wine Staging.app" / "Contents" / "Resources" / "wine" / "lib" / "libSDL2-2.0.0.dylib"
+        if not sdl_dylib.is_file():
+            self.skipTest(f"Wine SDL2 library not found at {sdl_dylib}")
+
+        cmd = [
+            "arch", "-x86_64", "/usr/bin/python3", "-c",
+            f"""
+import ctypes
+sdl = ctypes.CDLL('{sdl_dylib}')
+class SDL_version(ctypes.Structure):
+    _fields_ = [('major', ctypes.c_uint8), ('minor', ctypes.c_uint8), ('patch', ctypes.c_uint8)]
+v = SDL_version()
+sdl.SDL_GetVersion(ctypes.byref(v))
+print(f"{{v.major}}.{{v.minor}}.{{v.patch}}")
+"""
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        actual_version = tuple(map(int, res.stdout.strip().split(".")))
+        self.assertEqual(
+            pinned_version, actual_version,
+            f"Wine's bundled SDL version ({actual_version}) differs from rumble_bridge.c pin ({pinned_version}). "
+            f"Verify joystick->hwdata struct offset in SDL {actual_version} before updating the pin."
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

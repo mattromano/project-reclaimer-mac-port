@@ -162,7 +162,7 @@ note "ok"
 
 bold "Game scripts and Workshop mod helper"
 # (the network files are kept here too, so the window's network fix can reinstall the startup task)
-for f in run.sh launch.sh sandboxed.sh wine-sandbox.sb gamecontrollerdb.txt workshop_helper.py presets.py fit.py \
+for f in run.sh launch.sh sandboxed.sh wine-sandbox.sb gamecontrollerdb.txt zero-centered-devices.txt workshop_helper.py presets.py fit.py \
          game_process.py updater.py tools.py reclaimer-loopback.sh \
          local.projectreclaimer.loopback.plist; do script_file "scripts/$f" "$BASE/game/$f"; done
 chmod +x "$BASE/game/run.sh" "$BASE/game/launch.sh" "$BASE/game/sandboxed.sh" "$BASE/game/workshop_helper.py" "$BASE/game/updater.py" \

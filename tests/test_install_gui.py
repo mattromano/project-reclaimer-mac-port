@@ -117,5 +117,39 @@ class UninstallTest(unittest.TestCase):
         self.assertIn("chmod 700", text)
 
 
+class CursorConfinementTest(unittest.TestCase):
+    """install.sh's GrabFullscreen step, run on its own with a sandboxed.sh that only records what Wine was asked."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        (self.tmp / "game").mkdir()
+        (self.tmp / "prefix-wine").mkdir()
+        self.calls = self.tmp / "calls"
+        sandboxed = self.tmp / "game" / "sandboxed.sh"
+        sandboxed.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{self.calls}"\n')
+        sandboxed.chmod(0o755)
+        text = (REPO / "install.sh").read_text()
+        self.step = re.search(r"\nif ! grep -q '\"GrabFullscreen\".*?\nfi\n", text, re.S).group(0)
+
+    def run_step(self):
+        subprocess.run(["/bin/bash", "-c", self.step], check=True, timeout=30,
+                       env=dict(os.environ, BASE=str(self.tmp), WINE_BIN="/wine/bin"))
+        return self.calls.read_text().splitlines() if self.calls.exists() else []
+
+    def test_keeps_the_cursor_on_a_fullscreen_game(self):
+        # (without it the cursor slides onto a second display in fullscreen, and clicks land there)
+        (self.tmp / "prefix-wine" / "user.reg").write_text("WINE REGISTRY Version 2\n")
+        calls = self.run_step()
+        self.assertEqual(calls[0], r"/wine/bin/wine reg add HKCU\Software\Wine\X11 Driver "
+                                   "/v GrabFullscreen /t REG_SZ /d Y /f")
+        self.assertEqual(calls[1:], ["/wine/bin/wineserver -w"])
+
+    def test_already_set_means_no_wine_start(self):
+        (self.tmp / "prefix-wine" / "user.reg").write_text(
+            '[Software\\\\Wine\\\\X11 Driver] 1793237160\n#time=1dd674474cbe18a\n"GrabFullscreen"="Y"\n')
+        self.assertEqual(self.run_step(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

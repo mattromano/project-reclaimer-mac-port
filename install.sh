@@ -200,6 +200,14 @@ if ! grep -q '"DisableHidraw"=dword:00000001' "$BASE/prefix-wine/system.reg" 2>/
     /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
   WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$BASE/game/sandboxed.sh" "$WINE_BIN/wineserver" -w
 fi
+# the game doesn't keep the cursor on its own screen: in fullscreen on a Mac with two displays it slides onto the other
+# one, and clicks land there. Wine keeps it on a full-screen foreground window when asked, again after cmd-tab back
+# (win32u reads this from the X11 Driver key, whatever the display driver)
+if ! grep -q '"GrabFullscreen"="Y"' "$BASE/prefix-wine/user.reg" 2>/dev/null; then
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$BASE/game/sandboxed.sh" "$WINE_BIN/wine" reg add 'HKCU\Software\Wine\X11 Driver' \
+    /v GrabFullscreen /t REG_SZ /d Y /f >/dev/null 2>&1 || true
+  WINEPREFIX="$BASE/prefix-wine" WINEDEBUG=-all "$BASE/game/sandboxed.sh" "$WINE_BIN/wineserver" -w
+fi
 unlink_documents "$BASE/prefix-wine"
 # DXVK-macOS goes into this prefix's system32 so the shared game folder stays free of graphics DLLs. Its d3d11.dll is
 # renamed d3d11_dxvk.dll behind spinfix's d3d11.dll, which forwards to it and stops Halo 3's engine thread from

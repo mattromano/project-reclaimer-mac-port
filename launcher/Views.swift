@@ -1,5 +1,6 @@
 // The launcher window's views.
 import AppKit
+import Combine
 import SwiftUI
 import UserNotifications
 
@@ -222,15 +223,22 @@ struct HelpPanel: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $open) {
-            ScrollView {  // (keeps the window shorter than a laptop screen when mods are listed too)
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(items, id: \.game) { item in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("“\(item.game)”").font(.callout.weight(.semibold))
-                        Text(item.help).font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 10) {
+                // A fixed height, so the window's height doesn't depend on how a ScrollView sizes itself (#39).
+                ScrollView {  // (keeps the window shorter than a laptop screen when mods are listed too)
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(items, id: \.game) { item in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("“\(item.game)”").font(.callout.weight(.semibold))
+                                Text(item.help).font(.callout).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(height: 280)
+                // Outside the list, so it's on screen without scrolling to the end of the list.
                 HStack(spacing: 6) {
                     Text("Something else? Send the logs to whoever set this up for you:")
                         .font(.caption).foregroundStyle(.secondary)
@@ -240,8 +248,6 @@ struct HelpPanel: View {
             }
             .padding(.top, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 300)
         } label: {
             Label("Problems joining or playing?", systemImage: "questionmark.circle").font(.callout.weight(.medium))
                 .contentShape(Rectangle())
@@ -253,8 +259,69 @@ struct HelpPanel: View {
 
 struct ContentView: View {
     @ObservedObject var m: Launcher
+    /// The page's full height and the usable height of the window's screen: when the page is taller (a small display,
+    /// or the help list open with warnings showing), the window scrolls instead of cutting off its top and bottom (#39).
+    @State private var pageHeight: CGFloat = 0
+    @State private var screenHeight: CGFloat? = nil
+    @State private var window: NSWindow? = nil
 
     var body: some View {
+        Group {
+            if let height = launcherScrollHeight(page: pageHeight, screen: screenHeight) {
+                ScrollViewReader { proxy in
+                    ScrollView { measuredPage }
+                        .frame(height: height)
+                        .onAppear { if m.helpOpen { showHelp(proxy) } }
+                        .onChange(of: m.helpOpen) { _, open in if open { showHelp(proxy) } }
+                }
+            } else {
+                measuredPage
+            }
+        }
+        .frame(width: 540)
+        .background(WindowReader { window = $0; fitScreen() })
+        .onChange(of: pageHeight) { _, _ in fitScreen() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            fitScreen()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didChangeScreenNotification)) { note in
+            if (note.object as? NSWindow) === window { fitScreen() }
+        }
+        .sheet(isPresented: $m.showTools) { ToolsSheet(launcher: m, t: m.tools) }
+        .sheet(isPresented: $m.showController) { ControllerSheet(launcher: m) }
+    }
+
+    /// The page at its natural height, reporting that height.
+    private var measuredPage: some View {
+        page
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { g in Color.clear.preference(key: PageHeightKey.self, value: g.size.height) })
+            .onPreferenceChange(PageHeightKey.self) { pageHeight = $0 }
+    }
+
+    /// Opening the help list in a scrolling window scrolls to it, so its Show logs link is in view.
+    private func showHelp(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async { withAnimation { proxy.scrollTo(helpID, anchor: .bottom) } }
+    }
+
+    /// Reads the screen's usable height, then (after the window has resized) lifts the window if it runs below the
+    /// Dock: a window that grows keeps its top edge where it was.
+    private func fitScreen() {
+        guard let screen = window?.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        if screenHeight != visible.height { screenHeight = visible.height }
+        DispatchQueue.main.async {
+            guard let window, let visible = window.screen?.visibleFrame else { return }
+            if let y = liftedWindowY(minY: window.frame.minY, height: window.frame.height,
+                                     visibleMinY: visible.minY, visibleMaxY: visible.maxY) {
+                window.setFrameOrigin(NSPoint(x: window.frame.minX, y: y))
+            }
+        }
+    }
+
+    private let helpID = "help"
+
+    private var page: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             VStack(alignment: .leading, spacing: 14) {
@@ -346,7 +413,7 @@ struct ContentView: View {
                 if let e = m.linkError { Text(e).font(.caption).foregroundStyle(.red) }
             }
 
-            HelpPanel(open: $m.helpOpen)
+            HelpPanel(open: $m.helpOpen).id(helpID)
 
             if let e = m.gameError {
                 Label(e, systemImage: "exclamationmark.triangle.fill")
@@ -379,9 +446,6 @@ struct ContentView: View {
             .sheet(isPresented: $m.showInstallGames) { InstallGamesSheet(m: m, t: m.tools) }
         }
         .padding(24)
-        .frame(width: 540)
-        .sheet(isPresented: $m.showTools) { ToolsSheet(launcher: m, t: m.tools) }
-        .sheet(isPresented: $m.showController) { ControllerSheet(launcher: m) }
     }
 
     /// Halo 3 was removed in Tools: the Play button installs it instead.
@@ -412,6 +476,33 @@ struct ContentView: View {
             .help("Force quit, repair, mods and disk space, reports, uninstall")
         }
     }
+}
+
+/// The launcher page's natural height, as laid out.
+private struct PageHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Hands over the window a view is in, once it's in one (and again if it moves to another).
+private struct WindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow) -> Void
+
+    final class Probe: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { DispatchQueue.main.async { [weak self] in self?.onWindow?(window) } }
+        }
+    }
+
+    func makeNSView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.onWindow = onWindow
+        return probe
+    }
+
+    func updateNSView(_ probe: Probe, context: Context) { probe.onWindow = onWindow }
 }
 
 /// A failed join, said plainly, with the fix: switch to the server's version (or back to the newest) and rejoin.

@@ -447,5 +447,16 @@ check(!insideInstall("/", root: "/Users/p/Games/ProjectReclaimer"), "root is not
 check(insideInstall("/private/var/folders/x/PR/game", root: "/var/folders/x/PR"),
       "lsof's real path matches the path the window was given")
 
+// window fit (#39)
+check(launcherScrollHeight(page: 700, screen: 1000) == nil, "fits: no scrolling")
+check(launcherScrollHeight(page: 0, screen: 800) == nil, "not measured yet: no scrolling")
+check(launcherScrollHeight(page: 1100, screen: nil) == nil, "unknown screen: no scrolling")
+check(launcherScrollHeight(page: 1100, screen: 800) == 756, "too tall: scrolls at the screen's height less the title bar")
+check(launcherScrollHeight(page: 900, screen: 300) == 320, "tiny screen: keeps a usable height")
+check(liftedWindowY(minY: 200, height: 500, visibleMinY: 70, visibleMaxY: 844) == nil, "on screen: stays put")
+check(liftedWindowY(minY: -100, height: 700, visibleMinY: 70, visibleMaxY: 844) == 70, "below the Dock: lifted")
+check(liftedWindowY(minY: -300, height: 900, visibleMinY: 70, visibleMaxY: 844) == -56,
+      "taller than the screen: lifted only until the title bar is at the top")
+
 print(failures == 0 ? "All launcher tests passed" : "\(failures) launcher test(s) failed")
 exit(failures == 0 ? 0 : 1)

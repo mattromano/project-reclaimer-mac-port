@@ -700,3 +700,23 @@ func isConstrainedMemory(_ bytes: UInt64) -> Bool {
     let gb = memoryGigabytes(bytes)
     return gb > 0 && gb < 16
 }
+
+// MARK: - window fit
+
+/// The launcher window's content height when it has to scroll, or nil when everything fits on screen (the window
+/// then hugs its content, as before). `page` is the content's full height, `screen` the usable height of the
+/// window's screen (menu bar and Dock left out), `chrome` the title bar plus a little room. Never shorter than
+/// `minimum`, so a tiny screen still shows a usable window (#39: a 1408×881 display cut off Play and Show logs).
+func launcherScrollHeight(page: CGFloat, screen: CGFloat?, chrome: CGFloat = 44, minimum: CGFloat = 320) -> CGFloat? {
+    guard let screen, page > 0 else { return nil }
+    let room = screen - chrome
+    return page > room ? max(room, minimum) : nil
+}
+
+/// Where a window's bottom edge (y, AppKit coordinates) has to move so the whole window is inside `visible`, or nil
+/// when it already is. A window that grows keeps its top edge, so it can run below the Dock or the screen's bottom:
+/// this lifts it, but never so far that the title bar goes above the visible area.
+func liftedWindowY(minY: CGFloat, height: CGFloat, visibleMinY: CGFloat, visibleMaxY: CGFloat) -> CGFloat? {
+    guard minY < visibleMinY else { return nil }
+    return max(min(visibleMinY, visibleMaxY - height), minY)
+}

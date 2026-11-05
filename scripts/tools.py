@@ -2,7 +2,7 @@
 """The launcher window's Tools menu and automatic fixes, one command per action.
 
   net-check          "ok" or "missing": are the local network addresses Reclaimer needs on lo0?
-  net-fix            reinstall + restart the network startup task (one macOS password prompt)
+  net-fix            reinstall + run the network task (one macOS password prompt)
   controller-check   "stuck" if macOS's game controller service is stuck (no app sees controllers until a restart)
   audio-check        where the Mac's sound goes, tab-separated: "ok <output>", "muted <output>", "virtual <output>"
                      or "headset <headphones> <output>" (the game keeps the output it starts with)
@@ -60,7 +60,7 @@ DAEMON_DIR = os.environ.get("RECLAIMER_TEST_DAEMON_DIR", "/Library/Application S
 # what the root startup task must be: checked as root after copying it where only root can write (also in install.sh;
 # tests/test_tools.py checks all four match scripts/)
 LOOPBACK_SHA = "23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83"
-LOOPBACK_PLIST_SHA = "27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd"
+LOOPBACK_PLIST_SHA = "89cb8a52d7b5cf2771b6945ac288359b6225e66c6b568a09fe7374f92307d323"
 DRYRUN = os.environ.get("RECLAIMER_TOOLS_DRYRUN", "")  # "1": print admin commands; "cancel": as if cancelled
 # How long the Forge asset library may write nothing before startup is called stalled. The first build takes about a
 # minute on the hardware it was tuned for; three minutes of no writes means it is not going to finish on its own.
@@ -149,11 +149,14 @@ def net_check():
 
 
 def net_fix():
-    """Install the startup task's files again and restart it, which re-adds every address (as install.sh does)."""
+    """Install the network task's files again and run it, which re-adds every address (as install.sh does).
+
+    Since 1.5.2 the task doesn't run at boot (#37: adding ~1,800 addresses while macOS starts up stalled configd and
+    panicked some Macs), so after a restart this is what adds the addresses: when the window opens, before Play."""
     script, plist = GAME / "reclaimer-loopback.sh", GAME / f"{DAEMON}.plist"
     installed = Path(DAEMON_DIR) / "reclaimer-loopback.sh"
     restart = (f"{{ launchctl bootout system/{DAEMON} 2>/dev/null; true; }} && "
-               f"launchctl bootstrap system {DAEMON_PLIST}")
+               f"launchctl bootstrap system {DAEMON_PLIST} && launchctl kickstart system/{DAEMON}")
     if file_sha256(installed) == LOOPBACK_SHA and file_sha256(INSTALLED_PLIST) == LOOPBACK_PLIST_SHA:
         command = restart  # (root's own copy is right: nothing of the player's needs to go to root)
     else:
@@ -174,7 +177,7 @@ def net_fix():
         if net_check() == "ok":
             return "ok"
         time.sleep(1)
-    return "error: The network setup is still incomplete. Restart your Mac, then open Project Reclaimer again."
+    return "error: The network setup is still incomplete. Quit Project Reclaimer, then open it again."
 
 
 def gamecontrollerd_state():

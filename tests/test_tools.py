@@ -190,6 +190,7 @@ class ToolsTest(unittest.TestCase):
                          "not valid shell")  # ("/Library/Application Support" has a space)
         self.assertIn("/Library/LaunchDaemons/local.projectreclaimer.loopback.plist", cmd)
         self.assertIn("launchctl bootstrap system", cmd)
+        self.assertIn("launchctl kickstart system/local.projectreclaimer.loopback", cmd)  # (no RunAtLoad since 1.5.2)
         self.assertIn("reclaimer-loopback.sh", cmd)
         self.assertEqual(out[-1], "ok")
 
@@ -228,6 +229,17 @@ class ToolsTest(unittest.TestCase):
         cmd = next(l for l in out if l.startswith("dry-run admin: "))
         self.assertNotIn("install -o root", cmd)
         self.assertIn("launchctl bootstrap system", cmd)
+
+    def test_network_task_never_runs_at_boot(self):
+        # #37: adding ~1,800 lo0 addresses during boot stalled configd and kernel-panicked Macs. The task only runs
+        # when asked (install.sh, net-fix), so its plist must have nothing that starts it on its own.
+        plist = (REPO / "scripts" / "local.projectreclaimer.loopback.plist").read_text()
+        for key in ("RunAtLoad", "KeepAlive", "StartInterval", "StartCalendarInterval", "WatchPaths", "QueueDirectories"):
+            self.assertNotIn(key, plist)
+        install = (REPO / "install.sh").read_text()
+        self.assertIn("launchctl kickstart system/local.projectreclaimer.loopback", install)
+        # an update reinstalls a changed plist too, so 1.5.1's copy with RunAtLoad gets replaced
+        self.assertIn('! cmp -s "$T/local.projectreclaimer.loopback.plist" /Library/LaunchDaemons/', install)
 
     def test_shipped_checksums_match_the_network_files(self):
         t = self.load()

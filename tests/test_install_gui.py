@@ -37,6 +37,13 @@ class InstallGuiTest(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         return p.returncode, [l for l in p.stdout.splitlines() if l.startswith("error: ")]
 
+    def test_root_never_reads_a_file_the_game_can_write(self):
+        # the sandboxed game may write the user's temp folder; root's staged copies live in game/, which it can't
+        text = (REPO / "install.sh").read_text()
+        block = text[text.index('script_file scripts/reclaimer-loopback.sh') - 200:text.index('rm -rf "$T"')]
+        self.assertIn('T=$(mktemp -d "$BASE/game/', block)
+        self.assertIn("/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin", text[text.index("as_admin() {"):])
+
     def test_every_wine_start_is_sandboxed(self):
         # (an unsandboxed wineboot would run DLLs the sandboxed game could have changed)
         text = (REPO / "install.sh").read_text()

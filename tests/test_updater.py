@@ -90,6 +90,47 @@ class UpdaterTest(unittest.TestCase):
     def game_files(self):
         return sorted(p.name for p in (self.home / "game").glob("*.exe"))
 
+    def native_release(self):
+        # 0.10 is a native game ("Wine, CrossOver and Proton are no longer supported"): the newest Wine-era release
+        # stays the one this port runs, from its own release folder
+        self.wine_last = b"MZ reclaimer 0.9.23"
+        (self.tags / "v0.9.23").mkdir(parents=True)
+        (self.tags / "v0.9.23" / "project-reclaimer-client-v0.9.23.exe").write_bytes(self.wine_last)
+        (self.tags / "v0.9.23" / "SHA256SUMS.txt").write_text(
+            f"{sha(self.wine_last)}  project-reclaimer-client-v0.9.23.exe\n")
+        (self.rel / "project-reclaimer-client-v0.10.1.exe").write_bytes(b"MZ native-era 0.10.1")
+        (self.rel / "SHA256SUMS.txt").write_text(
+            f"{sha(b'MZ native-era 0.10.1')}  project-reclaimer-client-v0.10.1.exe\n"
+            f"{sha(b'mac')}  project-reclaimer-client-v0.10.1-macos-aarch64.zip\n")
+
+    def test_native_release_is_never_installed_under_wine(self):
+        self.native_release()
+        rc, out = self.run_updater("game")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.game_files(), ["project-reclaimer-v0.9.23.exe"])
+        self.assertEqual((self.home / "game" / "project-reclaimer-v0.9.23.exe").read_bytes(), self.wine_last)
+
+    def test_native_release_tells_the_player_where_to_get_it(self):
+        self.native_release()
+        out = self.run_updater("game")[1]
+        done = [l for l in out if l.startswith("done: ")]
+        self.assertEqual(len(done), 1, out)
+        self.assertIn("native Mac app", done[0])
+        self.assertIn("github.com/ProjectReclaimer/project-reclaimer-releases", done[0])
+
+    def test_native_releases_cant_be_chosen_or_listed(self):
+        self.native_release()
+        (self.tmp / "releases.json").write_text(json.dumps([
+            {"tag_name": "v0.10.1", "published_at": "2026-11-07T22:08:42Z", "prerelease": False, "draft": False},
+            {"tag_name": "v0.9.23", "published_at": "2026-10-22T19:26:18Z", "prerelease": False, "draft": False},
+        ]))
+        out = self.run_updater("versions")[1]
+        versions = [v["version"] for v in json.loads(next(l for l in out if l.startswith("{")))["versions"]]
+        self.assertEqual(versions, ["0.9.23"])
+        rc, out = self.run_updater("use", "0.10.1")
+        self.assertTrue(out[-1].startswith("error: "), out)
+        self.assertNotIn("project-reclaimer-v0.10.1.exe", self.game_files())
+
     def test_up_to_date_changes_nothing(self):
         (self.home / "game" / "project-reclaimer-v0.9.12.exe").write_bytes(NEW_EXE)
         rc, out = self.run_updater("run")

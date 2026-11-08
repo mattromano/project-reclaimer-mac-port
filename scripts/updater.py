@@ -176,8 +176,27 @@ def client_in(sums_url):
     raise RuntimeError("that Project Reclaimer release has no game client")
 
 
+# 0.10 is a native game ("Wine, CrossOver and Proton are no longer supported"): this port keeps running the last
+# Wine-era release and points players to the native app instead of installing 0.10 under Wine
+WINE_LAST = "0.9.23"
+NATIVE_NOTICE = ("Project Reclaimer 0.10 is a native Mac app now: get it from "
+                 "github.com/ProjectReclaimer/project-reclaimer-releases. This app stays on 0.9.23")
+native_seen = False
+
+
+def wine_era(version):
+    return version_tuple(version) < (0, 10)
+
+
 def latest_release():
-    return client_in(f"{RELEASES}/SHA256SUMS.txt")
+    """(download URL, sha256, installed name) of the newest release this port runs under Wine."""
+    global native_seen
+    download, expected, exe = client_in(f"{RELEASES}/SHA256SUMS.txt")
+    if wine_era(re.search(r"v([0-9.]+)\.exe$", exe).group(1)):
+        return f"{RELEASES}/{download}", expected, exe
+    native_seen = True
+    download, expected, exe = client_in(f"{RELEASE_DOWNLOADS}/v{WINE_LAST}/SHA256SUMS.txt")
+    return f"{RELEASE_DOWNLOADS}/v{WINE_LAST}/{download}", expected, exe
 
 
 def download_verified(url, target, expected):
@@ -210,7 +229,7 @@ def update_game():
     older release), or raises."""
     if CHOSEN.exists():
         return "chosen"
-    download, expected, exe = latest_release()
+    url, expected, exe = latest_release()
     target = GAME / exe
     if target.exists() and sha256(target) == expected:
         remove_other_clients(exe)
@@ -219,7 +238,7 @@ def update_game():
         return "running"
     version = re.search(r"v([0-9.]+)\.exe$", exe).group(1)
     say(f"status: Updating Project Reclaimer to {version}…")
-    download_verified(f"{RELEASES}/{download}", target, expected)
+    download_verified(url, target, expected)
     remove_other_clients(exe)
     return "updated"
 
@@ -236,7 +255,7 @@ def versions():
         if r.get("prerelease") or r.get("draft"):
             continue
         version = str(r.get("tag_name", "")).lstrip("v")
-        if not re.fullmatch(r"\d+(\.\d+){1,3}", version):
+        if not re.fullmatch(r"\d+(\.\d+){1,3}", version) or not wine_era(version):
             continue
         exe = f"project-reclaimer-v{version}.exe"
         items.append({"version": version, "date": str(r.get("published_at", ""))[:10],
@@ -251,6 +270,8 @@ def use(version):
         return update_game()
     if not re.fullmatch(r"\d+(\.\d+){1,3}", version):
         raise RuntimeError(f"{version} isn't a Project Reclaimer version")
+    if not wine_era(version):
+        raise RuntimeError(NATIVE_NOTICE)
     download, expected, exe = client_in(f"{RELEASE_DOWNLOADS}/v{version}/SHA256SUMS.txt")
     VERSIONS.mkdir(parents=True, exist_ok=True)
     target = VERSIONS / exe
@@ -337,10 +358,12 @@ def main(argv):
         return 0
     if "chosen" in results:
         say(f"done: using {CHOSEN.read_text().strip()}")
-    elif "updated" in results:
-        say("done: updated")
     elif "running" in results:
         say("done: skipped while the game is running")
+    elif native_seen:
+        say(f"done: {NATIVE_NOTICE}")
+    elif "updated" in results:
+        say("done: updated")
     else:
         say("done: up to date")
     return 0

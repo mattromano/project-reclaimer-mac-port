@@ -1,5 +1,11 @@
 # Project Reclaimer Mac Port
 
+> **Project Reclaimer 0.10 runs natively on Apple Silicon Macs.** Get it from the
+> [Project Reclaimer releases](https://github.com/ProjectReclaimer/project-reclaimer-releases/releases/latest)
+> (`project-reclaimer-client-v…-macos-aarch64.zip`). Upstream no longer supports Wine, so since 1.5.2 this port
+> stays on 0.9.23, the last Wine-era release, for servers that haven't updated. This repo is being reworked into a
+> small helper for what the native app still needs on a Mac: getting Halo: MCC's files from your Steam account.
+
 Play Halo 3 through [Project Reclaimer](https://projectreclaimer.dev) (community servers, Forge, Workshop mods) on an
 Apple Silicon Mac. Project Reclaimer is Windows-only; this installs it under Wine with everything tuned for macOS,
 and adds a **Project Reclaimer** app to your Mac.

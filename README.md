@@ -36,7 +36,7 @@ and adds a **Project Reclaimer** app to your Mac.
      file against a known SHA-256 checksum;
    - shows a **QR code**: scan it with the Steam app on your phone. Only Halo 3 is downloaded, from your own Steam
      account (~35 GB), with a progress bar and the time left. Nothing is shared from anyone else's copy;
-   - asks for your **Mac password** once, for a small startup task that enables the local network addresses
+   - asks for your **Mac password** once, for a small task that enables the local network addresses
      Reclaimer uses (`127.0.0.x`–`127.0.3.x`, `127.3.1.x`–`127.3.3.x`; macOS only enables `127.0.0.1` by default);
    - puts **Project Reclaimer** in `~/Applications` and opens it. You can eject and delete the disk image.
 
@@ -169,7 +169,7 @@ The problems found while porting it, and what the scripts do about each:
 | Wine's built-in DirectX 11 can't create a device on MoltenVK, so the engine crashes on start | DXVK-macOS `d3d11`/`d3d10core` in the Wine prefix's `system32` |
 | Reclaimer's menu (egui/glutin) needs OpenGL 3.0+, but Wine on macOS only gives 2.1 to apps that don't request a core profile | Mesa's `opengl32.dll` (llvmpipe) next to the game, with `LP_NUM_THREADS=0` (its worker threads each used a full core) |
 | Crash mid-match in `xaudio2_9.dll`, and poor audio | MCC's `xaudio2_9redist.dll` hands off to Wine's FAudio on "Windows 10"; `xaudio2_9=d` keeps Microsoft's own mixer |
-| Joins refused / engine crashes binding `127.x.y.z` | A LaunchDaemon aliases `127.0.0.x`–`127.0.3.x` and `127.3.1.x`–`127.3.3.x` on `lo0` at boot (0.9.8 added `127.0.2.x`, 0.9.13 `127.3.2.x`); the app updates it and re-adds missing ones before Play |
+| Joins refused / engine crashes binding `127.x.y.z` | A LaunchDaemon aliases `127.0.0.x`–`127.0.3.x` and `127.3.1.x`–`127.3.3.x` on `lo0` (0.9.8 added `127.0.2.x`, 0.9.13 `127.3.2.x`). Since 1.5.2 it doesn't run at boot (#37): the app re-adds missing ones before Play, which asks for your password once after a restart |
 | Uncapped frame rate kept the Mac maxed out even at the menu | 60 fps cap |
 | Halo 3's engine thread polls the clock ~40,000 times a second between frames: one full CPU core under Rosetta, menu and match alike | `spinfix`: a small `d3d11.dll` in front of DXVK that makes halo3.dll's clock polling sleep 1 ms once it reads the clock 8+ times within a millisecond. Menu ~2.4 → ~1.5 cores, match ~1.75 → ~0.9, same 60 fps. Source in `spinfix/`; set `RECLAIMER_SPINFIX_US=0` to turn it off |
 | DXVK rebuilt its swapchain every frame (a 1080p swapchain in a differently sized full-screen window), stalling the GPU each time | Windowed at exactly the render size: ~95 → ~120 fps uncapped |

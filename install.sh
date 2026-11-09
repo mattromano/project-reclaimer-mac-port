@@ -36,7 +36,7 @@ SPINFIX_SHA=0ec56a555b7b420c381f7cf5010719c86c3626c3c99efcb376981089f5d4f847  # 
 # the root startup task (scripts/reclaimer-loopback.sh and its plist): checked as root after they're copied where only
 # root can write, so a file swapped in the meantime never runs at boot (also in tools.py; the tests check all match)
 LOOPBACK_SHA=23c93f7c5e587da1dba205534b4661042dd13b5142cbac6846f1ffdcf4a3cd83
-LOOPBACK_PLIST_SHA=27fcc35a99d21f2b266cca4041bbd8388e72738c8b3d1797e43f243b7556d7cd
+LOOPBACK_PLIST_SHA=89cb8a52d7b5cf2771b6945ac288359b6225e66c6b568a09fe7374f92307d323
 LAUNCHER_SHA=10cba37f58f31797a0332499194870dcc3d961d6671c959357e9694305d41a2a  # launcher/ProjectReclaimer (built by scripts/make_launcher.sh)
 UPDATE=${RECLAIMER_UPDATE:-}
 GUI=${RECLAIMER_GUI:-}
@@ -274,21 +274,24 @@ mkdir -p "$BASE/prefix-wine/$STEAM_REL/steamapps/workshop/content/$MCC_APP"
 
 bold "Local network addresses (needs your Mac password once)"
 note "Reclaimer talks to the game over 127.0.0-3.x / 127.3.1.x; macOS only enables 127.0.0.1."
-note "This installs a small startup task (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist)."
+note "This installs a small task that adds them (/Library/LaunchDaemons/local.projectreclaimer.loopback.plist)."
+note "It doesn't run at startup: after a restart, the app asks for your password once to add them again."
 T=$(mktemp -d)
 script_file scripts/reclaimer-loopback.sh "$T/reclaimer-loopback.sh"
 script_file scripts/local.projectreclaimer.loopback.plist "$T/local.projectreclaimer.loopback.plist"
 LB_DIR="/Library/Application Support/ProjectReclaimer"
-# (re)install when missing or when a Reclaimer release needed new address ranges
+# (re)install when missing, when a Reclaimer release needed new address ranges, or when the plist changed (1.5.2
+# dropped RunAtLoad so the task no longer runs at boot: #37)
 if ! cmp -s "$T/reclaimer-loopback.sh" "$LB_DIR/reclaimer-loopback.sh" ||
-   [ ! -f /Library/LaunchDaemons/local.projectreclaimer.loopback.plist ]; then
+   ! cmp -s "$T/local.projectreclaimer.loopback.plist" /Library/LaunchDaemons/local.projectreclaimer.loopback.plist; then
   as_admin "mkdir -p '$LB_DIR' &&
     install -o root -g wheel -m 755 '$T/reclaimer-loopback.sh' '$LB_DIR/reclaimer-loopback.sh' &&
     install -o root -g wheel -m 644 '$T/local.projectreclaimer.loopback.plist' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
     { printf '%s  %s\\n' $LOOPBACK_SHA '$LB_DIR/reclaimer-loopback.sh' $LOOPBACK_PLIST_SHA /Library/LaunchDaemons/local.projectreclaimer.loopback.plist |
       shasum -a 256 -c -s || { rm -f '$LB_DIR/reclaimer-loopback.sh' /Library/LaunchDaemons/local.projectreclaimer.loopback.plist; false; }; } &&
     { launchctl bootout system/local.projectreclaimer.loopback 2>/dev/null; true; } &&
-    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist" \
+    launchctl bootstrap system /Library/LaunchDaemons/local.projectreclaimer.loopback.plist &&
+    launchctl kickstart system/local.projectreclaimer.loopback" \
     "Project Reclaimer is setting up the local network addresses the game needs." ||
     die "The network setting wasn't installed (the password box was cancelled or refused). Press Try Again."
 fi
